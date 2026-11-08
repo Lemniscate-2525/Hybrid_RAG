@@ -1,8 +1,9 @@
 {
-    "timestamp": 1794142590.478176,
+    "timestamp": 1794143173.8402255,
+    "langsmith_project": "hybrid-rag-production-eval",
     "aggregate": {
-        "avg_latency_ms": 869.3,
-        "avg_ttft_ms": 288.7,
+        "avg_latency_ms": 692.0,
+        "avg_ttft_ms": 228.3,
         "precision_at_k": 1.0,
         "recall_at_k": 1.0,
         "mean_reciprocal_rank": 1.0,
@@ -15,8 +16,8 @@
     "runs": [
         {
             "query": "What is Database and DBMS?",
-            "latency_ms": 869,
-            "ttft_ms": 219,
+            "latency_ms": 770,
+            "ttft_ms": 224,
             "precision@k": 1.0,
             "recall@k": 1.0,
             "mrr": 1.0,
@@ -28,8 +29,8 @@
         },
         {
             "query": "What are SQL Data Types?",
-            "latency_ms": 873,
-            "ttft_ms": 324,
+            "latency_ms": 671,
+            "ttft_ms": 238,
             "precision@k": 1.0,
             "recall@k": 1.0,
             "mrr": 1.0,
@@ -41,8 +42,8 @@
         },
         {
             "query": "What is the core idea of Adaptive RAG?",
-            "latency_ms": 866,
-            "ttft_ms": 323,
+            "latency_ms": 635,
+            "ttft_ms": 223,
             "precision@k": 1.0,
             "recall@k": 1.0,
             "mrr": 1.0,
