@@ -1,0 +1,56 @@
+{
+    "timestamp": 1794142590.478176,
+    "aggregate": {
+        "avg_latency_ms": 869.3,
+        "avg_ttft_ms": 288.7,
+        "precision_at_k": 1.0,
+        "recall_at_k": 1.0,
+        "mean_reciprocal_rank": 1.0,
+        "ndcg_at_k": 1.0,
+        "retrieval_relevance": 0.8,
+        "groundedness": 0.8,
+        "correctness": 0.8,
+        "answer_relevance": 0.8
+    },
+    "runs": [
+        {
+            "query": "What is Database and DBMS?",
+            "latency_ms": 869,
+            "ttft_ms": 219,
+            "precision@k": 1.0,
+            "recall@k": 1.0,
+            "mrr": 1.0,
+            "ndcg@k": 1.0,
+            "retrieval_relevance": 0.8,
+            "groundedness": 0.8,
+            "correctness": 0.8,
+            "answer_relevance": 0.8
+        },
+        {
+            "query": "What are SQL Data Types?",
+            "latency_ms": 873,
+            "ttft_ms": 324,
+            "precision@k": 1.0,
+            "recall@k": 1.0,
+            "mrr": 1.0,
+            "ndcg@k": 1.0,
+            "retrieval_relevance": 0.8,
+            "groundedness": 0.8,
+            "correctness": 0.8,
+            "answer_relevance": 0.8
+        },
+        {
+            "query": "What is the core idea of Adaptive RAG?",
+            "latency_ms": 866,
+            "ttft_ms": 323,
+            "precision@k": 1.0,
+            "recall@k": 1.0,
+            "mrr": 1.0,
+            "ndcg@k": 1.0,
+            "retrieval_relevance": 0.8,
+            "groundedness": 0.8,
+            "correctness": 0.8,
+            "answer_relevance": 0.8
+        }
+    ]
+}

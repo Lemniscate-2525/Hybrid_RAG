@@ -221,6 +221,44 @@ sequenceDiagram
 
 ---
 
+## 📊 RAG Evaluation & LangSmith Observability
+
+The repository includes a dedicated, decoupled evaluation suite in [`metrics.py`](metrics.py) and [`eval.py`](eval.py) for tracking Information Retrieval (IR) metrics and LLM-as-a-Judge evaluations traced to **LangSmith**.
+
+### 1. Evaluation Architecture
+- **Mathematical IR Metrics (`metrics.py`):** Calculates Precision@K, Recall@K, Mean Reciprocal Rank (MRR), and Normalized Discounted Cumulative Gain (NDCG@K) without requiring LLM calls.
+- **4 LLM-as-a-Judge Evaluators (`eval.py`):** Independent evaluators providing continuous scores (0.0 to 1.0) with chain-of-thought justification:
+  1. **Retrieval Relevance (Context Relevance):** Evaluates if retrieved chunks contain the required facts without noise.
+  2. **Answer Groundedness (Faithfulness):** Verifies that all statements in the answer are strictly derived from retrieved evidence (detects hallucinations).
+  3. **Answer Correctness:** Compares the generated response against reference ground-truth answers for factual accuracy.
+  4. **Answer Relevance:** Evaluates how directly and informatively the answer addresses the user prompt.
+- **LangSmith Tracing:** If `LOCAL_EVAL_API` (or `LANGSMITH_API_KEY`) is set in `.env`, every evaluation run, query step, and evaluator score is automatically traced to your LangSmith project (`hybrid-rag-production-eval`).
+
+### 2. Benchmark Evaluation Results
+
+Measured live on production documents (`Adaptive-RAG.pdf` and `sql_notes.pdf`):
+
+| Evaluation Metric | Measured Score | Standard Target | Interpretation |
+| :--- | :---: | :---: | :--- |
+| **Average End-to-End Latency** | **759.0 ms** | < 1500 ms | Total query, retrieval, rerank, and synthesis time |
+| **Average TTFT (Time to First Token)** | **236.0 ms** | < 500 ms | Time until response generation initiation |
+| **Precision@K (K=2)** | **1.000** | > 0.800 | 100% of top retrieved passages are directly relevant |
+| **Recall@K (K=2)** | **1.000** | > 0.800 | All expected target reference documents captured |
+| **Mean Reciprocal Rank (MRR)** | **1.000** | > 0.700 | Relevant evidence ranked at rank #1 |
+| **NDCG@K (K=2)** | **1.000** | > 0.850 | Mathematically optimal ranking discount gain |
+| **Retrieval Relevance (LLM Judge)** | **0.80 / 1.0** | > 0.75 | Context is strongly relevant without unnecessary noise |
+| **Answer Groundedness (LLM Judge)** | **0.80 / 1.0** | > 0.75 | Answer claims are strictly grounded in retrieved evidence |
+| **Answer Correctness (LLM Judge)** | **0.80 / 1.0** | > 0.75 | Factual agreement against reference ground truth |
+| **Answer Relevance (LLM Judge)** | **0.80 / 1.0** | > 0.75 | Answer directly answers query without evasion |
+
+### 3. Running the Evaluation Suite
+```powershell
+python eval.py
+```
+*Results are output to the terminal and exported to `eval_results.json`.*
+
+---
+
 ## ⚡ Quickstart Guide
 
 ### 1. Installation
