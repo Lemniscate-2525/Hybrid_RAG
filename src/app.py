@@ -3,13 +3,14 @@ Streamlit Frontend for Production Hybrid RAG Application.
 Provides user authentication, PDF document upload/management,
 and real-time hybrid search chat with grounded citations and latency observability.
 """
+import os
 import requests
 import streamlit as st
 
 API_BASE_URL = "http://127.0.0.1:8000/api/v1"
 
 st.set_page_config(
-    page_title="Production Hybrid RAG with Qdrant BM42 & Mistral",
+    page_title="Hybrid RAG",
     page_icon="🔍",
     layout="wide"
 )
@@ -40,62 +41,68 @@ def refresh_documents():
     except Exception:
         pass
 
-# ----------------- SIDEBAR: AUTH & DOCUMENT MANAGEMENT -----------------
+def attempt_login(email_val, pass_val):
+    if not email_val or not pass_val:
+        st.error("Please enter both email and password.")
+        return
+    try:
+        res = requests.post(
+            f"{API_BASE_URL}/auth/login",
+            json={"email": email_val.strip(), "password": pass_val},
+            timeout=8
+        )
+        if res.status_code == 200:
+            data = res.json()
+            st.session_state.token = data["access_token"]
+            st.session_state.user_email = data["email"]
+            refresh_documents()
+            st.rerun()
+        else:
+            st.error("Invalid email or password. If you haven't created an account yet, click 'Create Account'.")
+    except Exception as e:
+        st.error(f"Cannot connect to FastAPI backend on {API_BASE_URL}. Ensure uvicorn is running: {e}")
+
+def attempt_register(email_val, pass_val):
+    if not email_val or not pass_val:
+        st.error("Please enter both email and password.")
+        return
+    try:
+        res = requests.post(
+            f"{API_BASE_URL}/auth/register",
+            json={"email": email_val.strip(), "password": pass_val},
+            timeout=8
+        )
+        if res.status_code == 201:
+            st.success("Account created successfully! Logging you in...")
+            attempt_login(email_val, pass_val)
+        elif res.status_code == 409:
+            st.info("Account already exists! Logging in...")
+            attempt_login(email_val, pass_val)
+        else:
+            detail = res.json().get("detail", "Registration failed.")
+            st.error(f"Registration error: {detail}")
+    except Exception as e:
+        st.error(f"Cannot connect to FastAPI backend: {e}")
+
+# ----------------- SIDEBAR -----------------
 with st.sidebar:
-    st.title("🛡️ Enterprise Hybrid RAG")
-    st.caption("Dense (MiniLM) + Sparse (BM42) + Qdrant RRF + CrossEncoder + Mistral")
+    st.title("🛡️ Hybrid RAG")
+    st.caption("Dense (MiniLM) + Sparse (BM42) + Qdrant RRF + CrossEncoder + LLM")
 
     if not st.session_state.token:
-        auth_mode = st.radio("Account Access", ["Log In", "Register"], horizontal=True)
-        email = st.text_input("Email", key="auth_email")
+        st.subheader("🔐 Account Access")
+        email = st.text_input("Email", key="auth_email", placeholder="you@example.com")
         password = st.text_input("Password", type="password", key="auth_password")
 
-        if auth_mode == "Register":
-            st.caption("Password requirements: 8+ chars, 1 uppercase, 1 lowercase, 1 number.")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Log In", use_container_width=True, type="primary"):
+                attempt_login(email, password)
+        with col2:
             if st.button("Create Account", use_container_width=True):
-                try:
-                    res = requests.post(
-                        f"{API_BASE_URL}/auth/register",
-                        json={"email": email, "password": password},
-                        timeout=5
-                    )
-                    if res.status_code == 201:
-                        st.success("Account created! Logging in...")
-                        login_res = requests.post(
-                            f"{API_BASE_URL}/auth/login",
-                            json={"email": email, "password": password},
-                            timeout=5
-                        )
-                        if login_res.status_code == 200:
-                            data = login_res.json()
-                            st.session_state.token = data["access_token"]
-                            st.session_state.user_email = data["email"]
-                            refresh_documents()
-                            st.rerun()
-                    else:
-                        detail = res.json().get("detail", "Registration failed")
-                        st.error(detail)
-                except Exception as e:
-                    st.error(f"Cannot reach backend server: {e}")
+                attempt_register(email, password)
 
-        else:  # Log In
-            if st.button("Log In", use_container_width=True):
-                try:
-                    res = requests.post(
-                        f"{API_BASE_URL}/auth/login",
-                        json={"email": email, "password": password},
-                        timeout=5
-                    )
-                    if res.status_code == 200:
-                        data = res.json()
-                        st.session_state.token = data["access_token"]
-                        st.session_state.user_email = data["email"]
-                        refresh_documents()
-                        st.rerun()
-                    else:
-                        st.error(res.json().get("detail", "Invalid credentials"))
-                except Exception as e:
-                    st.error(f"Cannot reach backend server: {e}")
+        st.caption("Password requirements: 8+ characters, 1 uppercase, 1 lowercase, 1 digit.")
 
     else:
         # Authenticated Session View
@@ -111,7 +118,7 @@ with st.sidebar:
         st.subheader("📄 Upload Document")
         uploaded_file = st.file_uploader("Upload PDF (Max 15MB, 150 pages)", type=["pdf"])
         if uploaded_file is not None:
-            if st.button("Index Document", use_container_width=True):
+            if st.button("Index Document", use_container_width=True, type="primary"):
                 with st.spinner("Validating, chunking, and computing embeddings..."):
                     try:
                         files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
@@ -155,12 +162,11 @@ with st.sidebar:
         else:
             st.info("No documents uploaded yet.")
 
-# ----------------- MAIN CHAT INTERFACE -----------------
-st.title("Hybrid RAG with Qdrant BM42 & Mistral 8x7B")
+# ----------------- MAIN INTERFACE -----------------
+st.title("Hybrid RAG")
 
-# Server connectivity warning if unauthenticated or offline
 if not st.session_state.token:
-    st.info("👈 Please log in or register in the sidebar to access your isolated document workspace and begin querying.")
+    st.info("👋 Welcome! Please log in or create an account in the sidebar to access your private documents and start querying.")
     st.stop()
 
 # Query scope filter
@@ -220,14 +226,15 @@ if query:
                         "correlation_id": data.get("correlation_id", "n/a"),
                     }
 
+                    # Prominently render the generated answer
                     st.markdown(answer)
 
                     if citations:
-                        with st.expander("📑 Retrieved Evidence & Citations"):
+                        with st.expander("📑 Retrieved Evidence & Citations", expanded=False):
                             for cit in citations:
                                 st.markdown(
-                                    f"**Source:** `{cit['file_name']}` | **Score:** `{cit['relevance_score']}`\n\n"
-                                    f"> {cit['snippet']}"
+                                    f"**Source Document:** `{cit['file_name']}` | **Passage Score:** `{cit['relevance_score']}`\n\n"
+                                    f"> {cit['snippet']}\n"
                                 )
 
                     st.caption(

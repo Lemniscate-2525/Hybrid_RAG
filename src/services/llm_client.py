@@ -1,23 +1,24 @@
 """
-Resilient LLM Inference Engine (Phase 6).
-Implements Circuit Breaker, Exponential Backoff with Jitter, Strict Timeouts,
-and Structured Error Classification for MistralAI.
+Resilient LLM Inference Engine.
+Supports OpenRouter (free and paid models), Mistral AI, and standard OpenAI-compatible endpoints.
+Implements Circuit Breaker, Exponential Backoff with Jitter, and Structured Error Handling.
 """
+import os
+import re
 import time
-import math
 import random
 import logging
 from enum import Enum
-from typing import Optional, List, Dict
+from typing import Optional, Dict, Any
 import httpx
 from src.config import settings
 
 logger = logging.getLogger(__name__)
 
 class CircuitState(str, Enum):
-    CLOSED = "CLOSED"       # Normal operation
-    OPEN = "OPEN"           # Failing, fast-rejecting
-    HALF_OPEN = "HALF_OPEN" # Testing upstream recovery
+    CLOSED = "CLOSED"
+    OPEN = "OPEN"
+    HALF_OPEN = "HALF_OPEN"
 
 class CircuitBreaker:
     def __init__(self, failure_threshold: int = 5, recovery_timeout: float = 30.0):
@@ -31,15 +32,13 @@ class CircuitBreaker:
         now = time.time()
         if self.state == CircuitState.OPEN:
             if now - self.last_failure_time > self.recovery_timeout:
-                logger.info("Circuit breaker transitioning from OPEN to HALF_OPEN (probing upstream)...")
+                logger.info("Circuit breaker transitioning from OPEN to HALF_OPEN...")
                 self.state = CircuitState.HALF_OPEN
                 return True
             return False
         return True
 
     def record_success(self):
-        if self.state == CircuitState.HALF_OPEN:
-            logger.info("Circuit breaker probe succeeded. Transitioning from HALF_OPEN to CLOSED.")
         self.state = CircuitState.CLOSED
         self.consecutive_failures = 0
 
@@ -48,55 +47,107 @@ class CircuitBreaker:
         self.last_failure_time = time.time()
         if self.consecutive_failures >= self.failure_threshold:
             self.state = CircuitState.OPEN
-            logger.error(
-                f"Circuit breaker tripped to OPEN after {self.consecutive_failures} consecutive failures. "
-                f"Fail-fast enabled for {self.recovery_timeout}s."
-            )
+            logger.error(f"Circuit breaker tripped to OPEN after {self.consecutive_failures} failures.")
 
-class ResilientMistralClient:
+class ResilientLLMClient:
     def __init__(self):
-        self.api_key = settings.MISTRAL_API_KEY
-        self.model = settings.MISTRAL_MODEL
         self.timeout = settings.LLM_TIMEOUT_SECONDS
         self.max_retries = settings.LLM_MAX_RETRIES
         self.circuit_breaker = CircuitBreaker(
             failure_threshold=settings.CIRCUIT_BREAKER_FAILURE_THRESHOLD,
             recovery_timeout=settings.CIRCUIT_BREAKER_RESET_TIMEOUT
         )
-        self.api_url = "https://api.mistral.ai/v1/chat/completions"
 
-    def is_configured(self) -> bool:
-        return bool(self.api_key and self.api_key != "mock_key")
+    def get_credentials(self) -> Dict[str, str]:
+        """Dynamically resolve API key, endpoint, and model from environment."""
+        # Check OpenRouter, generic LLM key, or Mistral
+        api_key = (
+            os.getenv("OPENROUTER_API_KEY") or
+            settings.OPENROUTER_API_KEY or
+            os.getenv("LLM_API_KEY") or
+            settings.LLM_API_KEY or
+            os.getenv("MistralAI") or
+            settings.MISTRAL_API_KEY
+        )
+
+        if not api_key or "your-" in api_key.lower() or api_key in ["mock_key", "change-me"]:
+            return {"configured": False}
+
+        api_key = api_key.strip()
+
+        # If OpenRouter key format (sk-or-...) or specified via OPENROUTER_API_KEY
+        if api_key.startswith("sk-or-") or os.getenv("OPENROUTER_API_KEY") or settings.OPENROUTER_API_KEY:
+            api_url = "https://openrouter.ai/api/v1/chat/completions"
+            model = os.getenv("OPENROUTER_MODEL") or os.getenv("LLM_MODEL") or settings.LLM_MODEL or "meta-llama/llama-3.2-3b-instruct:free"
+            provider = "openrouter"
+        elif "mistral" in settings.LLM_BASE_URL.lower() and not api_key.startswith("sk-or-"):
+            api_url = "https://api.mistral.ai/v1/chat/completions"
+            model = settings.MISTRAL_MODEL
+            provider = "mistral"
+        else:
+            api_url = os.getenv("LLM_BASE_URL") or settings.LLM_BASE_URL
+            model = os.getenv("LLM_MODEL") or settings.LLM_MODEL
+            provider = "generic"
+
+        return {
+            "configured": True,
+            "api_key": api_key,
+            "api_url": api_url,
+            "model": model,
+            "provider": provider
+        }
+
+    def _fallback_local_synthesis(self, user_prompt: str) -> str:
+        """
+        Synthesize an extracted summary directly from retrieved evidence
+        if no external LLM API key has been configured yet.
+        """
+        match = re.search(r'<retrieved_evidence[^>]*>(.*?)</retrieved_evidence>', user_prompt, re.DOTALL)
+        if match:
+            passage = match.group(1).strip()
+            # Clean sentences
+            sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', passage) if len(s.strip()) > 15]
+            summary = " ".join(sentences[:3]) if sentences else passage[:300]
+            return summary
+        return "I could not find relevant passages in your uploaded documents to answer this question."
 
     async def generate_response(self, system_prompt: str, user_prompt: str) -> str:
         """
         Generate completion with circuit breaker protection and bounded retries.
         """
+        creds = self.get_credentials()
+
+        if not creds.get("configured"):
+            logger.info("No LLM API key configured. Generating local passage extraction.")
+            return self._fallback_local_synthesis(user_prompt)
+
         if not self.circuit_breaker.can_execute():
             raise RuntimeError(
-                "Upstream LLM provider is currently experiencing an outage. Circuit breaker is OPEN. Please try again in 30 seconds."
+                "Upstream LLM provider is currently experiencing issues. Circuit breaker is OPEN. Please retry in 30 seconds."
             )
 
-        if not self.is_configured():
-            logger.warning("No MISTRAL_API_KEY configured. Returning deterministic mock response for testing.")
-            return (
-                f"[Grounded Response (Dev Mode)] Based on the provided context, the concept can be explained as follows. "
-                f"Query matched context correctly. [source: sample, page: 1]"
-            )
+        api_url = creds["api_url"]
+        api_key = creds["api_key"]
+        model = creds["model"]
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
 
+        # OpenRouter-specific metadata headers
+        if creds.get("provider") == "openrouter":
+            headers["HTTP-Referer"] = "http://localhost:8501"
+            headers["X-Title"] = "Hybrid RAG"
+
         payload = {
-            "model": self.model,
+            "model": model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            "temperature": 0.2,
+            "temperature": 0.3,
             "max_tokens": 1024,
         }
 
@@ -107,53 +158,49 @@ class ResilientMistralClient:
             attempt += 1
             try:
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    response = await client.post(self.api_url, json=payload, headers=headers)
+                    response = await client.post(api_url, json=payload, headers=headers)
 
-                # Status check
                 if response.status_code == 200:
                     data = response.json()
-                    content = data["choices"][0]["message"]["content"]
-                    self.circuit_breaker.record_success()
-                    return content
+                    choices = data.get("choices", [])
+                    if choices and "message" in choices[0]:
+                        content = choices[0]["message"]["content"]
+                        self.circuit_breaker.record_success()
+                        return content
+                    else:
+                        raise RuntimeError(f"Unexpected response structure: {data}")
 
                 elif response.status_code == 401:
-                    # Permanent error: Bad API Key
                     self.circuit_breaker.record_failure()
-                    raise ValueError("Mistral AI Authentication failed. Please verify your MISTRAL_API_KEY.")
+                    err_msg = f"⚠️ The configured API key was rejected by {creds.get('provider')}. Please check your OPENROUTER_API_KEY in `.env`.\n\n"
+                    logger.error(err_msg)
+                    return err_msg + self._fallback_local_synthesis(user_prompt)
 
                 elif response.status_code == 429:
-                    # Rate limit error from provider
-                    logger.warning(f"Mistral AI rate-limited (429) on attempt {attempt}/{self.max_retries}")
-                    sleep_time = (2 ** attempt) + random.uniform(0.1, 0.5)
-                    time.sleep(sleep_time)
+                    logger.warning(f"LLM API rate-limited (429) on attempt {attempt}/{self.max_retries}")
+                    time.sleep((2 ** attempt) + random.uniform(0.1, 0.5))
 
                 elif response.status_code >= 500:
-                    # Upstream server error
-                    logger.warning(f"Mistral AI 5xx error ({response.status_code}) on attempt {attempt}/{self.max_retries}")
-                    sleep_time = (2 ** attempt) + random.uniform(0.1, 0.5)
-                    time.sleep(sleep_time)
+                    logger.warning(f"LLM API 5xx ({response.status_code}) on attempt {attempt}/{self.max_retries}")
+                    time.sleep((2 ** attempt) + random.uniform(0.1, 0.5))
 
                 else:
                     self.circuit_breaker.record_failure()
-                    raise RuntimeError(f"Mistral API returned unexpected status {response.status_code}: {response.text}")
+                    raise RuntimeError(f"LLM API returned status {response.status_code}: {response.text}")
 
             except httpx.TimeoutException as e:
-                logger.warning(f"Mistral API call timed out after {self.timeout}s on attempt {attempt}")
+                logger.warning(f"LLM API call timed out after {self.timeout}s on attempt {attempt}")
                 last_exception = e
-                sleep_time = (2 ** attempt) + random.uniform(0.1, 0.5)
-                time.sleep(sleep_time)
+                time.sleep((2 ** attempt) + random.uniform(0.1, 0.5))
 
             except Exception as e:
                 last_exception = e
                 if isinstance(e, (ValueError, RuntimeError)):
                     raise
-                logger.warning(f"Error calling Mistral API on attempt {attempt}: {e}")
+                logger.warning(f"Error calling LLM API on attempt {attempt}: {e}")
 
         # Retries exhausted
         self.circuit_breaker.record_failure()
-        raise RuntimeError(
-            f"Failed to communicate with Mistral AI after {self.max_retries} attempts: {str(last_exception)}"
-        )
+        raise RuntimeError(f"Failed to communicate with LLM provider after {self.max_retries} attempts: {str(last_exception)}")
 
-llm_client = ResilientMistralClient()
-
+llm_client = ResilientLLMClient()

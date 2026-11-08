@@ -39,8 +39,12 @@ class Settings(BaseSettings):
     QDRANT_API_KEY: Optional[str] = Field(default=None, validation_alias="Qdrant_API_KEY")
     COLLECTION_NAME: str = Field(default="hybrid_rag_documents", validation_alias="Collection_Name")
 
-    # Mistral AI (support both standard and legacy casing)
+    # LLM Provider Configuration (Supports OpenRouter, Mistral, and OpenAI-compatible APIs)
+    LLM_API_KEY: Optional[str] = Field(default=None, validation_alias="LLM_API_KEY")
+    OPENROUTER_API_KEY: Optional[str] = Field(default=None, validation_alias="OPENROUTER_API_KEY")
     MISTRAL_API_KEY: Optional[str] = Field(default=None, validation_alias="MistralAI")
+    LLM_BASE_URL: str = Field(default="https://openrouter.ai/api/v1/chat/completions", validation_alias="LLM_BASE_URL")
+    LLM_MODEL: str = Field(default="meta-llama/llama-3.2-3b-instruct:free", validation_alias="LLM_MODEL")
     MISTRAL_MODEL: str = "open-mixtral-8x7b"
 
     # Embedding & Reranker Models

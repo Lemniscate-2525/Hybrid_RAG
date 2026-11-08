@@ -2,10 +2,16 @@
 Pytest Fixtures for Authentication, Database, and API Testing.
 Uses an isolated in-memory or temporary SQLite database.
 """
+import os
+os.environ["ENVIRONMENT"] = "testing"
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from src.config import settings
+settings.ENVIRONMENT = "testing"
+
 from src.db.database import Base, get_db
 from src.main import app
 

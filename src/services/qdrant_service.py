@@ -21,10 +21,17 @@ class QdrantService:
                 api_key=settings.QDRANT_API_KEY,
                 timeout=30
             )
+        elif settings.ENVIRONMENT == "testing":
+            logger.info("Initializing in-memory Qdrant client for testing.")
+            self.client = QdrantClient(":memory:")
         else:
-            logger.warning("No QDRANT_URL configured. Initializing local embedded Qdrant in data/qdrant_local")
             local_path = str(settings.UPLOAD_DIR.parent / "qdrant_local")
-            self.client = QdrantClient(path=local_path)
+            try:
+                logger.info(f"Connecting to local Qdrant at {local_path}")
+                self.client = QdrantClient(path=local_path)
+            except Exception as e:
+                logger.warning(f"Could not lock local Qdrant directory ({e}). Falling back to in-memory Qdrant.")
+                self.client = QdrantClient(":memory:")
 
         self.collection_name = settings.COLLECTION_NAME
         self.ensure_collection()
