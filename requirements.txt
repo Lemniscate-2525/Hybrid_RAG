@@ -1,0 +1,24 @@
+# Production Requirements for Hybrid RAG System
+python-dotenv==1.1.1
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+pydantic==2.14.3
+pydantic-settings==2.13.1
+email-validator==2.3.0
+sqlalchemy==2.1.4
+bcrypt==5.0.0
+PyJWT==2.15.1
+python-multipart==0.0.33
+filetype==1.2.0
+pypdf==6.21.4
+fastembed==0.9.1
+qdrant-client==1.20.0
+sentence-transformers==6.2.0
+llama-index-core==0.14.25
+llama-index-llms-mistralai>=0.3.0
+redis==8.1.0
+fakeredis==2.40.0
+httpx==0.28.1
+streamlit==1.66.1
+reportlab==5.1.0
+pytest==9.1.1
