@@ -31,7 +31,12 @@ async def run(args: argparse.Namespace) -> None:
     records = read_jsonl(args.benchmark)
     chunks = load_chunks(args.corpus)
     proposer = QrelsProposer()
-    pending = [r for r in records if r.expected_behavior != "abstain" and r.qrels_status != "verified"]
+    pending = [
+        r for r in records
+        if r.expected_behavior != "abstain"
+        and r.qrels_status != "verified"
+        and (args.force or not r.qrels)
+    ]
     if args.limit:
         pending = pending[:args.limit]
 
@@ -72,6 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=Path("evaluation/results/benchmark_with_qrels.jsonl"))
     parser.add_argument("--chunk-chars", type=int, default=1200)
     parser.add_argument("--limit", type=int, default=0, help="Optional maximum number of questions to process")
+    parser.add_argument("--force", action="store_true", help="Re-propose qrels even for records that already have pending labels")
     return parser.parse_args()
 
 
