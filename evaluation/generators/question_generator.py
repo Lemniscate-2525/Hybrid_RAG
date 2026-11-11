@@ -147,7 +147,7 @@ class QuestionGenerator:
                         logger.warning("Rejecting %s candidate: missing reference_answer.", scenario.scenario_id)
                         continue
 
-                    dedupe_key = (scenario.scenario_id, re.sub(r"\\s+", " ", question).casefold())
+                    dedupe_key = (scenario.scenario_id, re.sub(r"\s+", " ", question).casefold())
                     if dedupe_key in seen_in_batch:
                         continue
                     seen_in_batch.add(dedupe_key)
