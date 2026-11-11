@@ -109,7 +109,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=Path("evaluation/results/benchmark_candidates.jsonl"))
     parser.add_argument("--max-chunks", type=int, default=40)
     parser.add_argument("--chunks-per-batch", type=int, default=2)
-    parser.add_argument("--max-candidates-per-batch", type=int, default=4)
+    parser.add_argument("--max-candidates-per-batch", type=int, default=2)
     parser.add_argument("--per-scenario", type=int, default=1)
     parser.add_argument("--dedupe-threshold", type=float, default=0.88)
     parser.add_argument("--cluster-threshold", type=float, default=0.22)
