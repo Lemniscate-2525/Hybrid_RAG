@@ -6,8 +6,6 @@ from datetime import datetime
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
 
-# ----------------- AUTH SCHEMAS -----------------
-
 class UserRegister(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128, description="Password must be at least 8 characters")
@@ -36,17 +34,13 @@ class TokenResponse(BaseModel):
 
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-
     id: str
     email: str
     is_active: bool
     created_at: datetime
 
-# ----------------- DOCUMENT SCHEMAS -----------------
-
 class DocumentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-
     id: str
     original_filename: str
     file_size_bytes: int
@@ -61,8 +55,6 @@ class DeleteDocumentResponse(BaseModel):
     id: str
     deleted: bool
     message: str
-
-# ----------------- RAG QUERY SCHEMAS -----------------
 
 class QueryRequest(BaseModel):
     query: str = Field(min_length=2, max_length=500, description="The user query text")
@@ -92,8 +84,8 @@ class QueryResponse(BaseModel):
     cache_hit: bool = False
     duration_ms: int
     correlation_id: Optional[str] = None
-
-# ----------------- HEALTH & SYSTEM SCHEMAS -----------------
+    # Populated only when the caller presents the configured evaluation secret.
+    evaluation_trace: Optional[Dict[str, Any]] = None
 
 class HealthLiveResponse(BaseModel):
     status: str
@@ -108,4 +100,3 @@ class HealthReadyResponse(BaseModel):
     status: str
     timestamp: datetime
     components: Dict[str, ComponentStatus]
-
