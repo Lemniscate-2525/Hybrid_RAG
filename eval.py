@@ -31,16 +31,25 @@ EVAL_DEBUG_TOKEN = os.getenv("EVALUATION_DEBUG_TOKEN") or os.getenv("EVAL_DEBUG_
 TOP_K = int(os.getenv("EVAL_TOP_K", "10"))
 METRIC_K = int(os.getenv("EVAL_METRIC_K", "5"))
 
+LANGSMITH_KEY = os.getenv("LANGSMITH_API_KEY") or os.getenv("LANGCHAIN_API_KEY")
+LANGSMITH_PROJECT = os.getenv("LANGSMITH_PROJECT") or os.getenv("LANGCHAIN_PROJECT") or "hybrid-rag-evaluation"
+if LANGSMITH_KEY:
+    os.environ["LANGCHAIN_TRACING_V2"] = "true"
+    os.environ["LANGCHAIN_TRACING"] = "true"
+    os.environ["LANGCHAIN_API_KEY"] = LANGSMITH_KEY
+    os.environ["LANGSMITH_API_KEY"] = LANGSMITH_KEY
+    os.environ["LANGCHAIN_PROJECT"] = LANGSMITH_PROJECT
+    os.environ["LANGSMITH_PROJECT"] = LANGSMITH_PROJECT
+
 try:
     from langsmith import traceable
-    LANGSMITH_AVAILABLE = bool(os.getenv("LANGSMITH_API_KEY") or os.getenv("LANGCHAIN_API_KEY"))
+    LANGSMITH_AVAILABLE = bool(LANGSMITH_KEY)
 except Exception:
     LANGSMITH_AVAILABLE = False
 
     def traceable(name=None, run_type=None, **kwargs):
         def decorator(fn):
             return fn
-        return decorator
 
 from metrics import evaluate_retrieval
 
