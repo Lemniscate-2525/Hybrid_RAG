@@ -163,12 +163,45 @@ class ResilientLLMClient:
                 if response.status_code == 200:
                     data = response.json()
                     choices = data.get("choices", [])
-                    if choices and "message" in choices[0]:
-                        content = choices[0]["message"]["content"]
-                        self.circuit_breaker.record_success()
-                        return content
-                    else:
-                        raise RuntimeError(f"Unexpected response structure: {data}")
+                    if choices and isinstance(choices[0].get("message"), dict):
+                        choice = choices[0]
+                        message = choice["message"]
+                        content = message.get("content")
+
+                        # OpenRouter can return HTTP 200 with no user-facing content
+                        # (for example, a reasoning-only or tool-call completion).
+                        # Never silently pass None into downstream JSON parsing.
+                        if isinstance(content, list):
+                            text_parts = [
+                                part.get("text", "")
+                                for part in content
+                                if isinstance(part, dict) and part.get("type") == "text"
+                            ]
+                            content = "\\n".join(part for part in text_parts if part).strip()
+
+                        if isinstance(content, str) and content.strip():
+                            self.circuit_breaker.record_success()
+                            return content
+
+                        finish_reason = choice.get("finish_reason", "unknown")
+                        message_keys = sorted(message.keys())
+                        has_reasoning = bool(message.get("reasoning") or message.get("reasoning_content"))
+                        has_tool_calls = bool(message.get("tool_calls"))
+                        self.circuit_breaker.record_failure()
+                        raise RuntimeError(
+                            "LLM provider returned HTTP 200 but no text content. "
+                            f"provider={creds.get('provider')}, model={model}, "
+                            f"finish_reason={finish_reason}, message_keys={message_keys}, "
+                            f"reasoning_present={has_reasoning}, tool_calls_present={has_tool_calls}. "
+                            "Check the selected OpenRouter model/provider; it must support "
+                            "ordinary chat completions and return message.content."
+                        )
+
+                    raise RuntimeError(
+                        "Unexpected LLM response structure: "
+                        f"top_level_keys={sorted(data.keys())}, choices_type={type(choices).__name__}, "
+                        f"choices_count={len(choices) if isinstance(choices, list) else 'n/a'}"
+                    )
 
                 elif response.status_code == 401:
                     self.circuit_breaker.record_failure()
