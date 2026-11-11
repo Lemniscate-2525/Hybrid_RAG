@@ -182,6 +182,73 @@ class QdrantService:
 
         return candidate_chunks
 
+    
+    def scroll_chunks(
+        self,
+        user_id: str,
+        limit: int = 256,
+        offset: Optional[Any] = None,
+        doc_id: Optional[str] = None
+    ) -> Tuple[List[Dict[str, Any]], Optional[Any]]:
+        """
+        Retrieve indexed chunks for a specific tenant using paginated
+        Qdrant scrolling.
+
+        Returns:
+            A tuple containing:
+            - List of chunk dictionaries with actual Qdrant point IDs.
+            - Next pagination offset (None when no more records exist).
+        """
+
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000")
+
+        # Tenant isolation is mandatory.
+        filter_conditions = [
+            qmodels.FieldCondition(
+                key="user_id",
+                match=qmodels.MatchValue(value=user_id)
+            )
+        ]
+
+        # Optionally restrict inspection to a specific document.
+        if doc_id:
+            filter_conditions.append(
+                qmodels.FieldCondition(
+                    key="doc_id",
+                    match=qmodels.MatchValue(value=doc_id)
+                )
+            )
+
+        query_filter = qmodels.Filter(must=filter_conditions)
+
+        points, next_offset = self.client.scroll(
+            collection_name=self.collection_name,
+            scroll_filter=query_filter,
+            limit=limit,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False
+        )
+
+        chunks = []
+
+        for point in points:
+            payload = dict(point.payload or {})
+
+            chunks.append({
+                "chunk_id": str(point.id),
+                "user_id": payload.get("user_id"),
+                "doc_id": payload.get("doc_id"),
+                "file_name": payload.get("file_name"),
+                "chunk_index": payload.get("chunk_index"),
+                "page_label": payload.get("page_label"),
+                "text": payload.get("text", "")
+            })
+
+        return chunks, next_offset
+
+
     def delete_document_points(self, user_id: str, doc_id: str) -> None:
         """Delete all points associated with a specific document for a verified user."""
         filter_conditions = [
