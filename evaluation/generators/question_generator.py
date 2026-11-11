@@ -166,55 +166,5 @@ class QuestionGenerator:
                     })
                     accepted_in_batch += 1
 
-            valid_ids = {item["chunk_id"] for item in evidence}
-            seen_in_batch: set[tuple[str, str]] = set()
-            accepted_in_batch = 0
-
-            for candidate in candidates:
-                if accepted_in_batch >= max_candidates_per_batch:
-                    break
-
-                question = str(candidate.get("question", "")).strip()
-                scenario_id = str(candidate.get("scenario_id", "")).strip()
-                scenario = scenario_by_id.get(scenario_id)
-                if not question or scenario is None:
-                    continue
-
-                raw_source_ids = candidate.get("source_chunk_ids")
-                if not isinstance(raw_source_ids, list):
-                    logger.debug("Rejecting candidate without a source_chunk_ids list.")
-                    continue
-
-                # Reject the entire candidate if any cited ID is fabricated or unavailable.
-                source_ids = list(dict.fromkeys(str(cid) for cid in raw_source_ids))
-                if not source_ids or any(chunk_id not in valid_ids for chunk_id in source_ids):
-                    continue
-                if scenario_id == "multi_hop" and len(source_ids) < 2:
-                    continue
-
-                reference_answer = str(candidate.get("reference_answer", "")).strip()
-                if not reference_answer:
-                    continue
-
-                dedupe_key = (scenario_id, re.sub(r"\s+", " ", question).casefold())
-                if dedupe_key in seen_in_batch:
-                    continue
-                seen_in_batch.add(dedupe_key)
-
-                output.append({
-                    "question": question,
-                    "scenario_id": scenario.scenario_id,
-                    "category": scenario.category,
-                    "difficulty": scenario.difficulty,
-                    "expected_behavior": scenario.expected_behavior,
-                    "reference_answer": reference_answer,
-                    "source_chunk_ids": source_ids,
-                    "notes": str(candidate.get("notes", "")).strip(),
-                    "status": "candidate",
-                    "qrels": {},
-                    "qrels_status": "pending",
-                })
-                accepted_in_batch += 1
-
         logger.info("Generated %d validated question candidates from %d chunks.", len(output), len(selected_chunks))
         return output
