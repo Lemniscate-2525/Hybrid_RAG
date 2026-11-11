@@ -18,8 +18,9 @@ class QrelsProposer:
 
     def __init__(self, llm_client: Any | None = None):
         if llm_client is None:
-            from src.services.llm_client import llm_client as configured_client
-            llm_client = configured_client
+            # Keep evaluation isolated from the application's OpenRouter client.
+            from evaluation.generators.local_eval_client import LocalEvalLLMClient
+            llm_client = LocalEvalLLMClient()
         self.llm = llm_client
 
     async def propose(
