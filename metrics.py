@@ -1,87 +1,66 @@
-"""
-Information Retrieval (IR) & RAG Evaluation Metrics.
-Implements standard mathematical metrics: Precision@K, Recall@K, NDCG@K, and MRR.
-"""
+"""Chunk-level information-retrieval metrics for RAG evaluation."""
 import math
-from typing import List, Dict, Set, Union
+from typing import Dict, List, Set, Union, Sequence
 
-def precision_at_k(retrieved_ids: List[str], ground_truth_relevant_ids: Union[List[str], Set[str]], k: int = 5) -> float:
-    """
-    Calculate Precision@K:
-    Proportion of retrieved documents in the top-k that are relevant.
-    """
+Ids = Union[List[str], Set[str]]
+
+def precision_at_k(retrieved_ids: List[str], relevant_ids: Ids, k: int = 5) -> float:
+    """Relevant retrieved items divided by K (standard fixed-denominator P@K)."""
     if k <= 0:
         return 0.0
-    top_k = retrieved_ids[:k]
-    if not top_k:
+    relevant = set(relevant_ids)
+    return round(sum(item in relevant for item in retrieved_ids[:k]) / k, 4)
+
+def recall_at_k(retrieved_ids: List[str], relevant_ids: Ids, k: int = 5) -> float:
+    """Fraction of all known relevant items found in the first K results."""
+    relevant = set(relevant_ids)
+    if k <= 0 or not relevant:
         return 0.0
+    return round(len(set(retrieved_ids[:k]) & relevant) / len(relevant), 4)
 
-    relevant_set = set(ground_truth_relevant_ids)
-    hits = sum(1 for doc_id in top_k if doc_id in relevant_set)
-    return round(hits / k, 4)
-
-def recall_at_k(retrieved_ids: List[str], ground_truth_relevant_ids: Union[List[str], Set[str]], k: int = 5) -> float:
-    """
-    Calculate Recall@K:
-    Proportion of total relevant documents that are successfully retrieved in top-k.
-    """
-    relevant_set = set(ground_truth_relevant_ids)
-    if not relevant_set or k <= 0:
-        return 0.0
-
-    top_k = retrieved_ids[:k]
-    hits = sum(1 for doc_id in top_k if doc_id in relevant_set)
-    return round(min(hits / len(relevant_set), 1.0), 4)
-
-def reciprocal_rank(retrieved_ids: List[str], ground_truth_relevant_ids: Union[List[str], Set[str]]) -> float:
-    """
-    Calculate Reciprocal Rank (RR):
-    1 / rank of the first relevant document retrieved. Returns 0 if no relevant document found.
-    """
-    relevant_set = set(ground_truth_relevant_ids)
-    for rank, doc_id in enumerate(retrieved_ids, start=1):
-        if doc_id in relevant_set:
+def reciprocal_rank(retrieved_ids: List[str], relevant_ids: Ids, k: int = 0) -> float:
+    """Reciprocal rank of the first relevant result; k=0 means no cutoff."""
+    relevant = set(relevant_ids)
+    candidates = retrieved_ids[:k] if k > 0 else retrieved_ids
+    for rank, item in enumerate(candidates, start=1):
+        if item in relevant:
             return round(1.0 / rank, 4)
     return 0.0
 
 def mean_reciprocal_rank(all_retrieved: List[List[str]], all_relevant: List[List[str]]) -> float:
-    """
-    Calculate Mean Reciprocal Rank (MRR) across multiple queries.
-    """
-    if not all_retrieved:
+    if not all_retrieved or len(all_retrieved) != len(all_relevant):
         return 0.0
     scores = [reciprocal_rank(ret, rel) for ret, rel in zip(all_retrieved, all_relevant)]
     return round(sum(scores) / len(scores), 4)
 
 def dcg_at_k(retrieved_ids: List[str], relevance_map: Dict[str, float], k: int = 5) -> float:
-    """
-    Compute Discounted Cumulative Gain at rank K.
-    Formula: sum_{i=1}^k (2^{rel_i} - 1) / log2(i + 1)
-    """
-    top_k = retrieved_ids[:k]
-    dcg = 0.0
-    for i, doc_id in enumerate(top_k, start=1):
-        rel = relevance_map.get(doc_id, 0.0)
-        dcg += (2.0 ** rel - 1.0) / math.log2(i + 1)
-    return dcg
+    if k <= 0:
+        return 0.0
+    return sum(
+        (2.0 ** float(relevance_map.get(item, 0.0)) - 1.0) / math.log2(rank + 1)
+        for rank, item in enumerate(retrieved_ids[:k], start=1)
+    )
 
 def ndcg_at_k(retrieved_ids: List[str], relevance_map: Dict[str, float], k: int = 5) -> float:
-    """
-    Calculate Normalized Discounted Cumulative Gain (NDCG@K).
-    Compares the DCG of retrieved items against the Ideal DCG (IDCG).
-    Returns a score between 0.0 and 1.0.
-    """
     if not relevance_map or k <= 0:
         return 0.0
+    actual = dcg_at_k(retrieved_ids, relevance_map, k)
+    ideal_ids = sorted(relevance_map, key=lambda item: relevance_map[item], reverse=True)
+    ideal = dcg_at_k(ideal_ids, relevance_map, k)
+    return round(actual / ideal, 4) if ideal else 0.0
 
-    actual_dcg = dcg_at_k(retrieved_ids, relevance_map, k)
-
-    # Ideal DCG: sort all known relevant documents descending by their relevance score
-    ideal_sorted_ids = sorted(relevance_map.keys(), key=lambda x: relevance_map[x], reverse=True)
-    ideal_dcg = dcg_at_k(ideal_sorted_ids, relevance_map, k)
-
-    if ideal_dcg <= 0.0:
+def hit_rate_at_k(retrieved_ids: List[str], relevant_ids: Ids, k: int = 5) -> float:
+    if k <= 0:
         return 0.0
+    return float(bool(set(retrieved_ids[:k]) & set(relevant_ids)))
 
-    return round(min(actual_dcg / ideal_dcg, 1.0), 4)
-
+def evaluate_retrieval(retrieved_ids: List[str], qrels: Dict[str, float], k: int = 5) -> Dict[str, float]:
+    """Evaluate chunk IDs against graded qrels: {chunk_id: relevance_grade}."""
+    relevant = {chunk_id for chunk_id, grade in qrels.items() if float(grade) > 0}
+    return {
+        f"precision@{k}": precision_at_k(retrieved_ids, relevant, k),
+        f"recall@{k}": recall_at_k(retrieved_ids, relevant, k),
+        f"mrr@{k}": reciprocal_rank(retrieved_ids, relevant, k),
+        f"ndcg@{k}": ndcg_at_k(retrieved_ids, qrels, k),
+        f"hit_rate@{k}": hit_rate_at_k(retrieved_ids, relevant, k),
+    }
