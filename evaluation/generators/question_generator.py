@@ -14,21 +14,24 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_json_array(text: Any) -> list[dict[str, Any]]:
-    """Parse a JSON array, tolerating a surrounding Markdown code fence."""
+    """Extract the first valid JSON array, tolerating prose and Markdown fences."""
     if not isinstance(text, str) or not text.strip():
-        raise ValueError(
-            f"LLM returned empty/non-text content ({type(text).__name__}); "
-            "the provider may have returned a completion without message content."
-        )
-    cleaned = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", text.strip(), flags=re.I)
-    start, end = cleaned.find("["), cleaned.rfind("]")
-    if start < 0 or end < start:
-        raise ValueError("LLM response did not contain a JSON array.")
-    payload = json.loads(cleaned[start:end + 1])
-    if not isinstance(payload, list):
-        raise ValueError("Expected a JSON array.")
-    return [item for item in payload if isinstance(item, dict)]
+        raise ValueError(f"LLM returned empty/non-text content ({type(text).__name__}).")
 
+    cleaned = re.sub(r"<think>.*?</think>", "", text.strip(), flags=re.I | re.S)
+    cleaned = re.sub(r"```(?:json)?", "", cleaned, flags=re.I).replace("```", "")
+    decoder = json.JSONDecoder()
+
+    # raw_decode stops at the end of the array, ignoring trailing commentary.
+    for match in re.finditer(r"\[", cleaned):
+        try:
+            payload, _ = decoder.raw_decode(cleaned[match.start():])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+
+    raise ValueError(f"No valid JSON array found. Output preview: {cleaned[:240]!r}")
 
 class QuestionGenerator:
     """Creates candidate questions; generated items are proposals, never ground truth."""
@@ -48,7 +51,7 @@ class QuestionGenerator:
         scenario_ids: list[str] | None = None,
         max_chunks: int = 40,
         chunks_per_batch: int = 2,
-        max_candidates_per_batch: int = 4,
+        max_candidates_per_batch: int = 2,
     ) -> list[dict[str, Any]]:
         if questions_per_scenario < 1:
             raise ValueError("questions_per_scenario must be >= 1")
@@ -78,7 +81,7 @@ class QuestionGenerator:
                     "chunk_id": str(chunk.get("chunk_id", "")),
                     "doc_id": str(chunk.get("doc_id", "")),
                     "file_name": str(chunk.get("file_name", "")),
-                    "text": str(chunk.get("text", ""))[:3000],
+                    "text": str(chunk.get("text", ""))[:2200],
                 }
                 for chunk in batch
                 if chunk.get("chunk_id") and str(chunk.get("text", "")).strip()
@@ -105,7 +108,7 @@ class QuestionGenerator:
                 "and do not create qrels."
             )
             user_prompt = (
-                f"Generate at most {max_candidates_per_batch} candidates total for this evidence batch. "
+                f"Return at most {max_candidates_per_batch} JSON objects total for this evidence batch. "
                 f"Generate no more than {questions_per_scenario} per scenario. Select only scenarios "
                 "that the evidence genuinely supports; it is acceptable to return fewer candidates. "
                 "Use concise, natural questions. Every candidate must cite one or more supplied chunk IDs. "
