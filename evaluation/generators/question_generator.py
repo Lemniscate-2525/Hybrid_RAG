@@ -34,10 +34,11 @@ class QuestionGenerator:
     """Creates candidate questions; generated items are proposals, never ground truth."""
 
     def __init__(self, llm_client: Any | None = None):
-        # Lazy import avoids initializing the application LLM stack until generation is used.
+        # Evaluation must use its dedicated FreeLLMAPI key, never the app's
+        # OpenRouter/Mistral client. Dependency injection remains available for tests.
         if llm_client is None:
-            from src.services.llm_client import llm_client as configured_client
-            llm_client = configured_client
+            from evaluation.generators.local_eval_client import LocalEvalLLMClient
+            llm_client = LocalEvalLLMClient()
         self.llm = llm_client
 
     async def generate(
