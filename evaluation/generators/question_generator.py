@@ -13,8 +13,13 @@ from evaluation.scenarios.scenario_library import get_scenarios
 logger = logging.getLogger(__name__)
 
 
-def _parse_json_array(text: str) -> list[dict[str, Any]]:
+def _parse_json_array(text: Any) -> list[dict[str, Any]]:
     """Parse a JSON array, tolerating a surrounding Markdown code fence."""
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError(
+            f"LLM returned empty/non-text content ({type(text).__name__}); "
+            "the provider may have returned a completion without message content."
+        )
     cleaned = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", text.strip(), flags=re.I)
     start, end = cleaned.find("["), cleaned.rfind("]")
     if start < 0 or end < start:
@@ -113,10 +118,11 @@ class QuestionGenerator:
             response = await self.llm.generate_response(system_prompt, user_prompt)
             try:
                 candidates = _parse_json_array(response)
-            except (ValueError, json.JSONDecodeError):
+            except (ValueError, json.JSONDecodeError) as exc:
                 logger.warning(
-                    "Skipping malformed question-generation response for chunk batch %d",
+                    "Skipping question-generation response for chunk batch %d: %s",
                     start // chunks_per_batch,
+                    exc,
                 )
                 continue
 
