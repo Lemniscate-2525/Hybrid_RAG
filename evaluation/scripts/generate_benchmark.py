@@ -46,6 +46,7 @@ async def run(args: argparse.Namespace) -> None:
         max_chunks=args.max_chunks,
         chunks_per_batch=args.chunks_per_batch,
         max_candidates_per_batch=args.max_candidates_per_batch,
+        scenario_ids=args.scenario_ids,
     )
 
     deduplicator = QuestionDeduplicator(similarity_threshold=args.dedupe_threshold)
@@ -111,6 +112,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chunks-per-batch", type=int, default=2)
     parser.add_argument("--max-candidates-per-batch", type=int, default=2)
     parser.add_argument("--per-scenario", type=int, default=1)
+    parser.add_argument("--scenario-ids", type=lambda value: [item.strip() for item in value.split(",") if item.strip()], default=None, help="Optional comma-separated scenario IDs to generate")
     parser.add_argument("--dedupe-threshold", type=float, default=0.88)
     parser.add_argument("--cluster-threshold", type=float, default=0.22)
     parser.add_argument("--split", choices=("train", "dev", "test"), default="dev")
