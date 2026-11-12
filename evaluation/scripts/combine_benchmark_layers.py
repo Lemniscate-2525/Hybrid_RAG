@@ -116,14 +116,14 @@ def main() -> None:
     ):
         with args.output.with_name(args.output.stem + suffix).open("w", encoding="utf-8") as out:
             for row in rows:
-                out.write(json.dumps(row, ensure_ascii=False) + "\\n")
+                out.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     clusters = QuestionClusterer(args.cluster_threshold).cluster(accepted)
     cluster_path = args.output.with_name(args.output.stem + ".clusters.json")
     with cluster_path.open("w", encoding="utf-8") as out:
         json.dump(clusters, out, ensure_ascii=False, indent=2)
 
-    print("\\nCombined candidate curation complete")
+    print("\nCombined candidate curation complete")
     print(f"Layer A: {sum(1 for x in candidates if '[Layer A]' in x.get('notes', ''))}")
     print(f"Layer B: {sum(1 for x in candidates if '[Layer B]' in x.get('notes', ''))}")
     print(f"Layer C: {len(layer_c)}")
