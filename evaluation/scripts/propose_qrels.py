@@ -60,16 +60,23 @@ async def run(args: argparse.Namespace) -> None:
         ]
         try:
             proposal = await proposer.propose(
-                question=record.query,
-                chunks=compact_chunks,
-                reference_answer=record.reference_answer,
+            question=record.query,
+            chunks=compact_chunks,
+            reference_answer=record.reference_answer,
+            source_chunk_ids=record.source_chunk_ids,
             )
+
         except Exception as exc:
             write_jsonl(records, args.output)
+            logging.exception(
+            "Qrels proposal failed for record %s (%s/%s)",
+            record.id,
+            index,
+            len(pending),
+        )
             raise RuntimeError(
-                f"Qrels proposal failed for record {record.id} "
-                f"({index}/{len(pending)}). Completed proposals saved to {args.output}. "
-                "Fix the model/client issue and rerun using that output as --benchmark."
+                f"Qrels proposal failed: {type(exc).__name__}: {exc}. "
+                f"Completed proposals saved to {args.output}."
             ) from exc
 
         record.qrels = proposal["qrels"]
