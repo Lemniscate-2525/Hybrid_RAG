@@ -1,7 +1,6 @@
 """Dedicated local Ollama client for evaluation.
 
-Uses local Ollama inference only.
-Never falls back to application or OpenRouter credentials.
+Evaluation credentials and inference stay isolated from application providers.
 """
 import os
 from pathlib import Path
@@ -9,6 +8,7 @@ from typing import Any
 
 import httpx
 from dotenv import dotenv_values
+
 
 class LocalEvalLLMClient:
     def __init__(self) -> None:
@@ -19,81 +19,81 @@ class LocalEvalLLMClient:
             value = os.getenv(name) or file_values.get(name)
             return str(value).strip() if value and str(value).strip() else None
 
-        # LOCAL_EVAL_API may contain the endpoint URL from the earlier setup.
-        # LOCAL_EVAL_BASE_URL is also supported.
-        configured_url = (
-            setting("LOCAL_EVAL_BASE_URL")
-            or setting("LOCAL_EVAL_API")
+        self.base_url = (
+            setting("LOCAL_EVAL_BASE_URL") or "http://127.0.0.1:11434/v1"
+        ).replace("localhost", "127.0.0.1").rstrip("/")
+        self.model = setting("LOCAL_EVAL_MODEL") or "qwen3:1.7b"
+        self.api_key = setting("LOCAL_EVAL_API_KEY") or "ollama"
+        self.endpoint = (
+            self.base_url
+            if self.base_url.endswith("/chat/completions")
+            else f"{self.base_url}/chat/completions"
         )
 
-        self.base_url = (
-            configured_url or "http://127.0.0.1:11434/v1"
-        ).replace("localhost", "127.0.0.1").rstrip("/")
-
-        self.model = setting("LOCAL_EVAL_MODEL") or "qwen3:1.7b"
-
-        # Ollama does not require an API key.
-        self.api_key = setting("LOCAL_EVAL_API_KEY") or "ollama"
-
-        self.endpoint = self.base_url
-        if not self.endpoint.endswith("/chat/completions"):
-            self.endpoint += "/chat/completions"
-
-    async def generate_response(
-        self, system_prompt: str, user_prompt: str
+    async def _generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        json_mode: bool,
     ) -> str:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-
         payload: dict[str, Any] = {
-    "model": self.model,
-    "messages": [
-        {
-            "role": "system",
-            "content": system_prompt + "\n/no_think",
-        },
-        {"role": "user", "content": user_prompt},
-    ],
-    "temperature": 0.3,
-    "max_tokens": 4096,
-    "stream": False,
-    "think": False,
-}
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": system_prompt + "\n/no_think",
+                },
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.0 if json_mode else 0.3,
+            "max_tokens": 2048 if json_mode else 4096,
+            "stream": False,
+        }
+        if json_mode:
+            # Ollama's OpenAI-compatible endpoint supports JSON response mode.
+            payload["response_format"] = {"type": "json_object"}
 
+        timeout = httpx.Timeout(
+            connect=10.0,
+            read=900.0,
+            write=60.0,
+            pool=30.0,
+        )
         try:
-            timeout = httpx.Timeout(
-                connect=10.0,
-                read=600.0,
-                write=30.0,
-                pool=10.0,
-            )
-
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(
                     self.endpoint,
                     json=payload,
                     headers=headers,
                 )
+                response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise RuntimeError(
+                f"Ollama timed out while generating with model {self.model} "
+                f"at {self.endpoint}: {exc}"
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            body = exc.response.text[:1200]
+            raise RuntimeError(
+                f"Ollama returned HTTP {exc.response.status_code}: {body}"
+            ) from exc
         except httpx.RequestError as exc:
             raise RuntimeError(
-                "Could not reach Ollama at "
-                f"{self.endpoint}. Make sure the Ollama server is running."
+                f"Could not reach Ollama at {self.endpoint}: "
+                f"{type(exc).__name__}: {exc}. Check that Ollama is running."
             ) from exc
-
-        if response.status_code != 200:
-            raise RuntimeError(
-                f"Ollama request failed: HTTP {response.status_code}: "
-                f"{response.text[:1000]}"
-            )
 
         try:
             data = response.json()
         except ValueError as exc:
             raise RuntimeError(
-                "Ollama returned an invalid JSON response."
+                f"Ollama returned non-JSON HTTP content: {response.text[:800]!r}"
             ) from exc
 
         choices = data.get("choices") or []
@@ -114,9 +114,20 @@ class LocalEvalLLMClient:
             )
             raise RuntimeError(
                 "Ollama returned no text in message.content. "
-                f"finish_reason={finish_reason}; "
-                f"response_keys={sorted(data.keys())}"
+                f"finish_reason={finish_reason}; response_keys={sorted(data.keys())}"
             )
-
         return content.strip()
 
+    async def generate_response(
+        self, system_prompt: str, user_prompt: str
+    ) -> str:
+        return await self._generate(
+            system_prompt, user_prompt, json_mode=False
+        )
+
+    async def generate_json_response(
+        self, system_prompt: str, user_prompt: str
+    ) -> str:
+        return await self._generate(
+            system_prompt, user_prompt, json_mode=True
+        )
