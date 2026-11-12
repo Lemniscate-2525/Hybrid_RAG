@@ -1,4 +1,4 @@
-"""Propose qrels against the full exported corpus using LOCAL_EVAL_API.
+"""Propose qrels against the full exported corpus using the local Ollama evaluator.
 
 Proposals remain pending; this script never marks labels as verified.
 """
@@ -19,8 +19,12 @@ def load_chunks(path: Path) -> list[dict]:
             if not line.strip():
                 continue
             item = json.loads(line)
-            if not isinstance(item, dict) or not item.get("chunk_id") or not str(item.get("text", "")).strip():
-                raise ValueError(f"Invalid chunk record at line {line_no}")
+            if (
+                not isinstance(item, dict)
+                or not item.get("chunk_id")
+                or not str(item.get("text", "")).strip()
+            ):
+                raise ValueError(f"Invalid corpus chunk at line {line_no}: {path}")
             chunks.append(item)
     if not chunks:
         raise ValueError("Corpus snapshot contains no usable chunks.")
@@ -43,19 +47,31 @@ async def run(args: argparse.Namespace) -> None:
     print(f"Benchmark records: {len(records)}")
     print(f"Full-corpus chunks per question: {len(chunks)}")
     print(f"Qrels proposals to make: {len(pending)}")
-    print("Using LOCAL_EVAL_API. Existing verified qrels will be preserved.")
+    print("Evaluator: local Ollama (LOCAL_EVAL_BASE_URL / LOCAL_EVAL_MODEL)")
+    print("Existing verified qrels will be preserved.")
 
     for index, record in enumerate(pending, 1):
-        # Keep payload bounded while comparing against every chunk in the corpus.
         compact_chunks = [
-            {"chunk_id": str(c["chunk_id"]), "text": str(c["text"])[:args.chunk_chars]}
-            for c in chunks
+            {
+                "chunk_id": str(chunk["chunk_id"]),
+                "text": str(chunk["text"])[:args.chunk_chars],
+            }
+            for chunk in chunks
         ]
-        proposal = await proposer.propose(
-            question=record.query,
-            chunks=compact_chunks,
-            reference_answer=record.reference_answer,
-        )
+        try:
+            proposal = await proposer.propose(
+                question=record.query,
+                chunks=compact_chunks,
+                reference_answer=record.reference_answer,
+            )
+        except Exception as exc:
+            write_jsonl(records, args.output)
+            raise RuntimeError(
+                f"Qrels proposal failed for record {record.id} "
+                f"({index}/{len(pending)}). Completed proposals saved to {args.output}. "
+                "Fix the model/client issue and rerun using that output as --benchmark."
+            ) from exc
+
         record.qrels = proposal["qrels"]
         record.qrels_status = "pending"
         write_jsonl(records, args.output)
@@ -64,7 +80,6 @@ async def run(args: argparse.Namespace) -> None:
             f"{len(record.qrels)} relevant chunks proposed (pending review)"
         )
 
-    # Always write output, including when there were no records to process.
     write_jsonl(records, args.output)
     print(f"Saved: {args.output}")
     print("No qrels were marked verified. Human review is still required.")
@@ -72,12 +87,24 @@ async def run(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--benchmark", type=Path, default=Path("evaluation/results/benchmark_candidates.jsonl"))
-    parser.add_argument("--corpus", type=Path, default=Path("evaluation/results/corpus_28_chunks.jsonl"))
-    parser.add_argument("--output", type=Path, default=Path("evaluation/results/benchmark_with_qrels.jsonl"))
+    parser.add_argument(
+        "--benchmark", type=Path,
+        default=Path("evaluation/results/benchmark_candidates.jsonl"),
+    )
+    parser.add_argument(
+        "--corpus", type=Path,
+        default=Path("evaluation/results/corpus_28_chunks.jsonl"),
+    )
+    parser.add_argument(
+        "--output", type=Path,
+        default=Path("evaluation/results/benchmark_with_qrels.jsonl"),
+    )
     parser.add_argument("--chunk-chars", type=int, default=1200)
-    parser.add_argument("--limit", type=int, default=0, help="Optional maximum number of questions to process")
-    parser.add_argument("--force", action="store_true", help="Re-propose qrels even for records that already have pending labels")
+    parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Re-propose qrels even for records that already have pending labels",
+    )
     return parser.parse_args()
 
 
