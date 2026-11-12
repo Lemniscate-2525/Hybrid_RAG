@@ -90,25 +90,40 @@ class QrelsProposer:
             f"Chunks: {json.dumps(candidates, ensure_ascii=False)}"
         )
 
-        # The dedicated Ollama client uses JSON response mode. Injected test
-        # clients can continue implementing the simpler generate_response API.
-        if hasattr(self.llm, "generate_json_response"):
-            raw = await self.llm.generate_json_response(system, prompt)
-        else:
-            raw = await self.llm.generate_response(system, prompt)
-
-        parsed = _parse_object(raw)
-        proposed = parsed["qrels"]
-        valid_ids = {item["chunk_id"] for item in candidates}
-
+        # Small local models can enter repetition loops when asked to judge
+        # the entire corpus in one completion. Assess small batches instead;
+        # every supplied chunk is still examined and source hints go first.
         qrels: dict[str, int] = {}
-        for chunk_id, grade in proposed.items():
-            try:
-                numeric_grade = int(grade)
-            except (TypeError, ValueError):
-                continue
-            if str(chunk_id) in valid_ids and numeric_grade in (1, 2):
-                qrels[str(chunk_id)] = numeric_grade
+        batch_size = 4
+        for start in range(0, len(candidates), batch_size):
+            batch = candidates[start : start + batch_size]
+            batch_prompt = (
+                f"Question: {question}\\n"
+                f"Reference answer: {reference_answer}\\n"
+                f"Assess ONLY these {len(batch)} chunks. "
+                "Return relevant chunk IDs with grade 2 (direct support) "
+                "or grade 1 (partial support). Omit irrelevant chunks. "
+                'Return ONLY {"qrels": {"chunk-id": 2}}. '
+                f"Chunks: {json.dumps(batch, ensure_ascii=False)}"
+            )
+            if hasattr(self.llm, "generate_json_response"):
+                raw = await self.llm.generate_json_response(system, batch_prompt)
+            else:
+                raw = await self.llm.generate_response(system, batch_prompt)
+
+            parsed = _parse_object(raw)
+            proposed = parsed["qrels"]
+            valid_ids = {item["chunk_id"] for item in batch}
+            for chunk_id, grade in proposed.items():
+                try:
+                    numeric_grade = int(grade)
+                except (TypeError, ValueError):
+                    continue
+                if str(chunk_id) in valid_ids and numeric_grade in (1, 2):
+                    # Keep the strongest grade if a chunk is ever encountered twice.
+                    qrels[str(chunk_id)] = max(
+                        qrels.get(str(chunk_id), 0), numeric_grade
+                    )
 
         return {
             "qrels": qrels,
