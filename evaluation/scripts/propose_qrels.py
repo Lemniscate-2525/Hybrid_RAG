@@ -1,6 +1,6 @@
-"""Propose qrels against the full exported corpus using the local Ollama evaluator.
+"""Propose qrels against the exported corpus using the local Ollama evaluator.
 
-Proposals remain pending; this script never marks labels as verified.
+Proposals remain pending until a human reviews and verifies them.
 """
 import argparse
 import asyncio
@@ -14,6 +14,7 @@ from evaluation.schemas.benchmark import read_jsonl, write_jsonl
 
 def load_chunks(path: Path) -> list[dict]:
     chunks = []
+    seen_ids = set()
     with path.open("r", encoding="utf-8") as handle:
         for line_no, line in enumerate(handle, 1):
             if not line.strip():
@@ -25,6 +26,10 @@ def load_chunks(path: Path) -> list[dict]:
                 or not str(item.get("text", "")).strip()
             ):
                 raise ValueError(f"Invalid corpus chunk at line {line_no}: {path}")
+            chunk_id = str(item["chunk_id"])
+            if chunk_id in seen_ids:
+                raise ValueError(f"Duplicate chunk_id {chunk_id!r} at line {line_no}")
+            seen_ids.add(chunk_id)
             chunks.append(item)
     if not chunks:
         raise ValueError("Corpus snapshot contains no usable chunks.")
@@ -35,13 +40,14 @@ async def run(args: argparse.Namespace) -> None:
     records = read_jsonl(args.benchmark)
     chunks = load_chunks(args.corpus)
     proposer = QrelsProposer()
+
     pending = [
-        r for r in records
-        if r.expected_behavior != "abstain"
-        and r.qrels_status != "verified"
-        and (args.force or not r.qrels)
+        record for record in records
+        if record.expected_behavior != "abstain"
+        and record.qrels_status != "verified"
+        and (args.force or not record.qrels)
     ]
-    if args.limit:
+    if args.limit > 0:
         pending = pending[:args.limit]
 
     print(f"Benchmark records: {len(records)}")
@@ -60,22 +66,22 @@ async def run(args: argparse.Namespace) -> None:
         ]
         try:
             proposal = await proposer.propose(
-            question=record.query,
-            chunks=compact_chunks,
-            reference_answer=record.reference_answer,
-            source_chunk_ids=record.source_chunk_ids,
+                question=record.query,
+                chunks=compact_chunks,
+                reference_answer=record.reference_answer,
+                source_chunk_ids=record.source_chunk_ids,
             )
-
         except Exception as exc:
             write_jsonl(records, args.output)
             logging.exception(
-            "Qrels proposal failed for record %s (%s/%s)",
-            record.id,
-            index,
-            len(pending),
-        )
+                "Qrels proposal failed for record %s (%s/%s)",
+                record.id,
+                index,
+                len(pending),
+            )
             raise RuntimeError(
-                f"Qrels proposal failed: {type(exc).__name__}: {exc}. "
+                f"Qrels proposal failed for record {record.id} "
+                f"({index}/{len(pending)}): {type(exc).__name__}: {exc}. "
                 f"Completed proposals saved to {args.output}."
             ) from exc
 
@@ -84,7 +90,8 @@ async def run(args: argparse.Namespace) -> None:
         write_jsonl(records, args.output)
         print(
             f"[{index}/{len(pending)}] {record.id}: "
-            f"{len(record.qrels)} relevant chunks proposed (pending review)"
+            f"{len(record.qrels)} relevant chunks proposed (pending review)",
+            flush=True,
         )
 
     write_jsonl(records, args.output)
@@ -107,10 +114,13 @@ def parse_args() -> argparse.Namespace:
         default=Path("evaluation/results/benchmark_with_qrels.jsonl"),
     )
     parser.add_argument("--chunk-chars", type=int, default=1200)
-    parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument(
+        "--limit", type=int, default=0,
+        help="Optional maximum number of questions to process (0 means all)",
+    )
     parser.add_argument(
         "--force", action="store_true",
-        help="Re-propose qrels even for records that already have pending labels",
+        help="Re-propose qrels for records with existing pending labels",
     )
     return parser.parse_args()
 
