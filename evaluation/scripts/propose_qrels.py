@@ -103,7 +103,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--benchmark", type=Path,
-        default=Path("evaluation/results/benchmark_candidates.jsonl"),
+        default=Path("evaluation/results/benchmark_combined_candidates.jsonl"),
     )
     parser.add_argument(
         "--corpus", type=Path,
@@ -111,7 +111,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output", type=Path,
-        default=Path("evaluation/results/benchmark_with_qrels.jsonl"),
+        default=Path("evaluation/results/benchmark_v1_with_qrels.jsonl"),
     )
     parser.add_argument("--chunk-chars", type=int, default=1200)
     parser.add_argument(
