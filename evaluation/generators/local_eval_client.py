@@ -53,7 +53,8 @@ class LocalEvalLLMClient:
             ],
             "temperature": 0.0 if json_mode else 0.3,
             "max_tokens": 512 if json_mode else 4096,
-            "stream": False,\n            "frequency_penalty": 0.2 if json_mode else 0.0,
+            "stream": False,
+            "frequency_penalty": 0.2 if json_mode else 0.0,
         }
         if json_mode:
             # Ollama's OpenAI-compatible endpoint supports JSON response mode.
