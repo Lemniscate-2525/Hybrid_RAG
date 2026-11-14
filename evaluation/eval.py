@@ -1,18 +1,3 @@
-"""Hybrid RAG evaluation runner for LangSmith.
-
-Run from the repository root:
-    python -m evaluation.eval
-
-This runner:
-- Calls the local FastAPI RAG endpoint for each LangSmith example.
-- Uses one local Ollama call to score all four LLM-as-a-judge dimensions.
-- Caches that combined judge response so the four LangSmith evaluators do not
-  make four separate calls to the local model for the same run.
-- Computes IR metrics from positive qrels only, with normalized chunk IDs.
-- Checks that the authenticated tenant actually owns indexed documents before
-  starting an expensive benchmark run.
-"""
-
 import json
 import os
 import re
@@ -30,9 +15,6 @@ except ImportError:
     from metrics import precision_at_k, recall_at_k, ndcg_at_k, reciprocal_rank
 
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
 load_dotenv()
 
 LANGSMITH_API_KEY = os.getenv("LANGSMITH_API_KEY") or os.getenv("LANGCHAIN_API_KEY")
@@ -66,7 +48,6 @@ if not EVAL_EMAIL or not EVAL_PASSWORD:
 if TOP_K < 1:
     raise ValueError("EVAL_TOP_K must be at least 1")
 
-# LangSmith tracing/project configuration.
 os.environ["LANGSMITH_API_KEY"] = LANGSMITH_API_KEY
 os.environ["LANGSMITH_TRACING"] = "true"
 os.environ["LANGSMITH_PROJECT"] = LANGSMITH_PROJECT
@@ -78,16 +59,12 @@ client = Client(api_key=LANGSMITH_API_KEY)
 
 
 def _normalize_id(value: Any) -> Optional[str]:
-    """Normalize UUID-like chunk IDs for stable qrels/retrieval comparisons."""
     if value is None:
         return None
     normalized = str(value).strip().lower()
     return normalized or None
 
 
-# ---------------------------------------------------------------------------
-# Live RAG API client
-# ---------------------------------------------------------------------------
 class PDFRAGClient:
     def __init__(self) -> None:
         timeout = httpx.Timeout(
@@ -117,9 +94,7 @@ class PDFRAGClient:
         if not self.token:
             raise RuntimeError("Auth response has no access_token or token field")
 
-
     def _verify_tenant_documents(self) -> None:
-        """Fail before evaluation if this login has no indexed tenant corpus."""
         if self.documents_verified:
             return
 
@@ -177,7 +152,6 @@ class PDFRAGClient:
             print(f"Tenant documents (first 10): {names}")
 
     def _post_query(self, request_payload: Dict[str, Any]) -> httpx.Response:
-        """POST a query; refresh auth once and honor Retry-After for 429s."""
         url = f"{RAG_API_BASE_URL}{QUERY_ENDPOINT}"
         response = self.http.post(
             url,
@@ -223,6 +197,8 @@ class PDFRAGClient:
         if not self.token:
             self.authenticate()
 
+        self._verify_tenant_documents()
+
         request_payload: Dict[str, Any] = {
             "query": query_text,
             "top_k": TOP_K,
@@ -259,7 +235,6 @@ class PDFRAGClient:
             if chunk_id:
                 retrieved_chunk_ids.append(chunk_id)
 
-        # Preserve citation order and remove duplicate chunk IDs.
         retrieved_chunk_ids = list(dict.fromkeys(retrieved_chunk_ids))
 
         return {
@@ -268,7 +243,7 @@ class PDFRAGClient:
             "citations": citations,
             "retrieved_chunk_ids": retrieved_chunk_ids,
             "request_latency_ms": latency_ms,
-            "ttft_ms": None,  # The current endpoint is non-streaming.
+            "ttft_ms": None,
             "is_abstention": bool(data.get("is_abstention", False)),
             "cache_hit": bool(data.get("cache_hit", False)),
         }
@@ -278,16 +253,74 @@ rag_client = PDFRAGClient()
 
 
 def target(inputs: Dict[str, Any]) -> Dict[str, Any]:
-    """LangSmith target: execute one query against the local RAG application."""
     return rag_client.query(inputs)
 
 
-# ---------------------------------------------------------------------------
-# One local LLM call for all four judge dimensions
-# ---------------------------------------------------------------------------
-class LLMJudge:
-    """Local Ollama judge; one bundled call is cached for each LangSmith run."""
+class JudgeInconsistency(ValueError):
+    pass
 
+
+_NEGATION_MARKERS = (
+    "not ",
+    "n't",
+    "no ",
+    "never",
+    "without",
+    "lack",
+    "fail",
+    "irrelevant",
+    "unrelated",
+    "insufficient",
+    "incomplete",
+    "partially",
+    "barely",
+    "hardly",
+)
+
+_POSITIVE_INDICATORS = {
+    "retrieval_relevance": (
+        "directly useful",
+        "directly relevant",
+        "directly supports",
+        "highly relevant",
+        "useful for answering",
+        "explicitly states",
+    ),
+    "groundedness": (
+        "all claims are supported",
+        "fully supported",
+        "entirely supported",
+        "fully grounded",
+        "all factual claims",
+        "matches the reference",
+        "not affected",
+        "supported by the",
+    ),
+}
+
+
+def _contradicts_zero_score(key: str, score: float, reasoning: str) -> bool:
+    if score != 0.0:
+        return False
+
+    indicators = _POSITIVE_INDICATORS.get(key)
+    if not indicators:
+        return False
+
+    text = reasoning.lower()
+
+    for term in indicators:
+        start = text.find(term)
+        while start >= 0:
+            window = text[max(0, start - 30):start]
+            if not any(marker in window for marker in _NEGATION_MARKERS):
+                return True
+            start = text.find(term, start + 1)
+
+    return False
+
+
+class LLMJudge:
     REQUIRED_KEYS = (
         "retrieval_relevance",
         "groundedness",
@@ -365,6 +398,7 @@ class LLMJudge:
         context: str,
         answer: str,
         reference_answer: str,
+        temperature: float = 0.0,
     ) -> Dict[str, Dict[str, Any]]:
         prompt = f"""Evaluate this RAG result on four independent dimensions.
 
@@ -410,7 +444,7 @@ SCORING RUBRICS (each score must be between 0.0 and 1.0):
 
 IMPORTANT SCORING CONSISTENCY RULES:
 - Evaluate each dimension independently.
-- Determine the reasoning first, then assign a score consistent with that reasoning.
+- Write the reasoning first, then assign a score consistent with that reasoning.
 - A score of 0.0 means the dimension genuinely failed, not merely that the answer could be improved.
 - If evidence is described as directly useful, retrieval_relevance MUST NOT be 0.0.
 - If all factual claims are described as supported, groundedness MUST NOT be 0.0.
@@ -419,24 +453,24 @@ IMPORTANT SCORING CONSISTENCY RULES:
 - Do not change scores merely to make all four scores similar.
 - Before returning JSON, verify that every score agrees with its reasoning.
 
-Return ONLY this JSON object, with one concise reasoning sentence per dimension:
+Return ONLY this JSON object. Write each reasoning sentence first, then the score:
 
 {{
     "retrieval_relevance": {{
-        "score": 0.0,
-        "reasoning": "..."
+        "reasoning": "<one sentence>",
+        "score": <0.0 or 0.5 or 1.0>
     }},
     "groundedness": {{
-        "score": 0.0,
-        "reasoning": "..."
+        "reasoning": "<one sentence>",
+        "score": <0.0 or 0.5 or 1.0>
     }},
     "answer_correctness": {{
-        "score": 0.0,
-        "reasoning": "..."
+        "reasoning": "<one sentence>",
+        "score": <0.0 or 0.5 or 1.0>
     }},
     "answer_relevance": {{
-        "score": 0.0,
-        "reasoning": "..."
+        "reasoning": "<one sentence>",
+        "score": <0.0 or 0.5 or 1.0>
     }}
 }}
 """
@@ -457,7 +491,7 @@ Return ONLY this JSON object, with one concise reasoning sentence per dimension:
                     },
                     {"role": "user", "content": prompt},
                 ],
-                "temperature": 0,
+                "temperature": temperature,
                 "max_tokens": JUDGE_MAX_TOKENS,
                 "reasoning_effort": "none",
                 "response_format": {"type": "json_object"},
@@ -519,35 +553,10 @@ Return ONLY this JSON object, with one concise reasoning sentence per dimension:
                     f"Judge returned empty reasoning for {key}: {item}"
                 )
 
-            reasoning_lower = reasoning.lower()
-
-            if key == "retrieval_relevance" and score == 0.0:
-                positive_indicators = (
-                    "directly useful",
-                    "directly relevant",
-                    "directly supports",
-                    "highly relevant",
-                    "useful for answering",
+            if _contradicts_zero_score(key, score, reasoning):
+                raise JudgeInconsistency(
+                    f"{key}: 0.0 score with positive reasoning: {reasoning}"
                 )
-                if any(term in reasoning_lower for term in positive_indicators):
-                    raise ValueError(
-                        "Scoring inconsistency: retrieval is described as "
-                        "useful but receives a 0.0 score."
-                    )
-
-            if key == "groundedness" and score == 0.0:
-                positive_indicators = (
-                    "all claims are supported",
-                    "fully supported",
-                    "entirely supported",
-                    "fully grounded",
-                    "all factual claims",
-                )
-                if any(term in reasoning_lower for term in positive_indicators):
-                    raise ValueError(
-                        "Scoring inconsistency: answer is described as "
-                        "fully supported but receives a 0.0 groundedness score."
-                    )
 
             results[key] = {
                 "score": round(score, 4),
@@ -563,7 +572,6 @@ Return ONLY this JSON object, with one concise reasoning sentence per dimension:
 
         return results
 
-
     def evaluate_bundle(
         self,
         cache_key: str,
@@ -572,18 +580,37 @@ Return ONLY this JSON object, with one concise reasoning sentence per dimension:
         answer: str,
         reference_answer: str,
     ) -> Dict[str, Dict[str, Any]]:
-        # Evaluators for one LangSmith run may be scheduled on different worker
-        # threads. Lock around the cache check + request to guarantee one call.
         with self._lock:
             if cache_key in self._cache:
                 return self._cache[cache_key]
 
-            result = self._request_bundle(
-                query,
-                context,
-                answer,
-                reference_answer,
-            )
+            last_exc: Optional[Exception] = None
+            result: Optional[Dict[str, Dict[str, Any]]] = None
+
+            for temperature in (0.0, 0.3, 0.6):
+                try:
+                    result = self._request_bundle(
+                        query,
+                        context,
+                        answer,
+                        reference_answer,
+                        temperature,
+                    )
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    print(
+                        f"Judge attempt failed (T={temperature}): {exc}",
+                        flush=True,
+                    )
+
+            if result is None:
+                failure = {
+                    "score": None,
+                    "reasoning": f"[judge call failed] {last_exc}"[:500],
+                }
+                result = {key: dict(failure) for key in self.REQUIRED_KEYS}
+
             self._cache[cache_key] = result
             return result
 
@@ -667,11 +694,7 @@ def answer_relevance(run: Any, example: Any) -> Dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# IR metrics and abstention handling
-# ---------------------------------------------------------------------------
 def _coerce_qrels(raw_qrels: Any) -> Dict[str, float]:
-    """Accept the expected {chunk_id: grade} map and JSON-encoded maps."""
     if isinstance(raw_qrels, str):
         try:
             raw_qrels = json.loads(raw_qrels)
@@ -781,7 +804,7 @@ def retrieval_metrics(run: Any, example: Any):
             ),
         }
 
-    relevant_ids = list(qrels.keys())  # grade-0 qrels are deliberately excluded
+    relevant_ids = list(qrels.keys())
     retrieved_set = set(retrieved)
     overlap_count = len(retrieved_set.intersection(qrels))
     overlap_score = 1.0 if overlap_count else 0.0
@@ -822,9 +845,6 @@ def retrieval_metrics(run: Any, example: Any):
     ]
 
 
-# ---------------------------------------------------------------------------
-# Run the LangSmith experiment
-# ---------------------------------------------------------------------------
 def run_evaluation() -> None:
     print("=" * 72)
     print("HYBRID RAG | LANGSMITH BENCHMARK EVALUATION")
@@ -839,11 +859,9 @@ def run_evaluation() -> None:
     dataset = client.read_dataset(dataset_name=DATASET_NAME)
     print(f"Dataset confirmed: {dataset.name} ({dataset.id})")
 
-    # Authenticate and validate tenant corpus before creating an experiment.
-    # This catches the common case where EVAL_EMAIL was newly registered and
-    # therefore has a different user_id from the one that owns the qrels corpus.
     print("Checking evaluation account and indexed document inventory...")
     rag_client.authenticate()
+    rag_client._verify_tenant_documents()
 
     print("Starting experiment with max_concurrency=1 (laptop-friendly)...")
     results = client.evaluate(
