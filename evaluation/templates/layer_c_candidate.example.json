@@ -1,0 +1,12 @@
+{
+  "query": "Paste an actual user query from an authorized production trace",
+  "scenario_id": "production_observed",
+  "category": "production",
+  "difficulty": "medium",
+  "expected_behavior": "answer",
+  "reference_answer": "Human-verified answer grounded in the corpus",
+  "source_chunk_ids": ["exact-corpus-chunk-id"],
+  "qrels": {},
+  "qrels_status": "pending",
+  "notes": "Observed failure and trace/incident reference; do not include personal data"
+}

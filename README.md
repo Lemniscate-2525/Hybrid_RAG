@@ -221,44 +221,6 @@ sequenceDiagram
 
 ---
 
-## 📊 RAG Evaluation & LangSmith Observability
-
-The repository includes a dedicated, decoupled evaluation suite in [`metrics.py`](metrics.py) and [`eval.py`](eval.py) for tracking Information Retrieval (IR) metrics and LLM-as-a-Judge evaluations traced to **LangSmith**.
-
-### 1. Evaluation Architecture
-- **Mathematical IR Metrics (`metrics.py`):** Calculates Precision@K, Recall@K, Mean Reciprocal Rank (MRR), and Normalized Discounted Cumulative Gain (NDCG@K) without requiring LLM calls.
-- **4 LLM-as-a-Judge Evaluators (`eval.py`):** Independent evaluators providing continuous scores (0.0 to 1.0) with chain-of-thought justification:
-  1. **Retrieval Relevance (Context Relevance):** Evaluates if retrieved chunks contain the required facts without noise.
-  2. **Answer Groundedness (Faithfulness):** Verifies that all statements in the answer are strictly derived from retrieved evidence (detects hallucinations).
-  3. **Answer Correctness:** Compares the generated response against reference ground-truth answers for factual accuracy.
-  4. **Answer Relevance:** Evaluates how directly and informatively the answer addresses the user prompt.
-- **LangSmith Tracing:** If `LOCAL_EVAL_API` (or `LANGSMITH_API_KEY`) is set in `.env`, every evaluation run, query step, and evaluator score is automatically traced to your LangSmith project (`hybrid-rag-production-eval`).
-
-### 2. Benchmark Evaluation Results
-
-Measured live on production documents (`Adaptive-RAG.pdf` and `sql_notes.pdf`):
-
-| Evaluation Metric | Measured Score | Standard Target | Interpretation |
-| :--- | :---: | :---: | :--- |
-| **Average End-to-End Latency** | **759.0 ms** | < 1500 ms | Total query, retrieval, rerank, and synthesis time |
-| **Average TTFT (Time to First Token)** | **236.0 ms** | < 500 ms | Time until response generation initiation |
-| **Precision@K (K=2)** | **1.000** | > 0.800 | 100% of top retrieved passages are directly relevant |
-| **Recall@K (K=2)** | **1.000** | > 0.800 | All expected target reference documents captured |
-| **Mean Reciprocal Rank (MRR)** | **1.000** | > 0.700 | Relevant evidence ranked at rank #1 |
-| **NDCG@K (K=2)** | **1.000** | > 0.850 | Mathematically optimal ranking discount gain |
-| **Retrieval Relevance (LLM Judge)** | **0.80 / 1.0** | > 0.75 | Context is strongly relevant without unnecessary noise |
-| **Answer Groundedness (LLM Judge)** | **0.80 / 1.0** | > 0.75 | Answer claims are strictly grounded in retrieved evidence |
-| **Answer Correctness (LLM Judge)** | **0.80 / 1.0** | > 0.75 | Factual agreement against reference ground truth |
-| **Answer Relevance (LLM Judge)** | **0.80 / 1.0** | > 0.75 | Answer directly answers query without evasion |
-
-### 3. Running the Evaluation Suite
-```powershell
-python eval.py
-```
-*Results are output to the terminal and exported to `eval_results.json`.*
-
----
-
 ## ⚡ Quickstart Guide
 
 ### 1. Installation
@@ -412,6 +374,205 @@ tests/test_security.py::test_grounded_abstention_when_no_evidence PASSED [100%]
 | `POST` | `/api/v1/rag/query` | Bearer | Execute hybrid RAG query with citations and reranking |
 | `GET` | `/api/v1/health/live` | None | Liveness probe (200 OK) |
 | `GET` | `/api/v1/health/ready` | None | Readiness probe checking SQLite, Qdrant, and Redis |
+
+---
+
+## 🔎 Corpus Inspection and Snapshot Preparation
+
+Before building the benchmark, the indexed corpus was checked against Qdrant Cloud and the application's document records. This step matters because retrieval metrics are only meaningful when the exported chunks are real, uniquely identified, and scoped to the right tenant and document.
+
+### Corpus inspection tools
+
+| File | Purpose |
+| :--- | :--- |
+| `ct.py` | Scrolls through Qdrant points and inventories the tenant UUID, document ID, and file name stored in each payload. |
+| `dc.py` | Compares application-side users and document records with the Qdrant collection, point count, and sample payload metadata. |
+| `src/services/qdrant_service.py` | Contains the application's Qdrant connection, collection setup, payload indexes, point upsert, and tenant/document-filtered retrieval logic. |
+| `src/db/models.py` | Defines the user and document records used to cross-check document ownership and expected chunk counts. |
+
+### Corpus snapshot checks
+
+The corpus inspection and export workflow is designed around six checks:
+
+1. **Read from Qdrant Cloud:** inspect the actual indexed points rather than relying on local source PDFs or assumptions about what was uploaded.
+2. **Tenant isolation:** scope inspection to the selected tenant UUID so one tenant's chunks are not mixed with another tenant's data.
+3. **Document filtering:** filter by `doc_id` when a snapshot should contain one document or a selected document set.
+4. **Pagination:** use Qdrant scroll offsets to process the collection in pages instead of loading every point in one request.
+5. **JSONL snapshot export:** write one chunk record per line, preserving `chunk_id`, text, and document metadata for repeatable offline evaluation.
+6. **Statistics and uniqueness checks:** report corpus size and document distribution, and reject duplicate chunk IDs before the snapshot is used by benchmark generation.
+
+The exported snapshot used for the current benchmark contains 28 chunks:
+
+`evaluation/results/corpus_28_chunks.jsonl`
+
+This file is a fixed evaluation input. It lets question generation, candidate validation, qrels proposal, and later retrieval evaluation use the same corpus version.
+
+---
+
+## 📊 RAG Evaluation
+
+The evaluation suite is separate from the live application. It uses a fixed corpus snapshot and a layered benchmark so that questions, expected answers, and relevant evidence can be reviewed before the RAG system is scored.
+
+### 1. Evaluation architecture
+
+```mermaid
+flowchart TD
+    C["Qdrant Cloud corpus"] --> I["Corpus inspection and checks"]
+    I --> S["28-chunk JSONL snapshot"]
+    S --> A["Layer A: general RAG questions"]
+    S --> B["Layer B: PDF question types"]
+    S --> D["Layer C: manually curated robustness cases"]
+    A --> M["Combine benchmark layers"]
+    B --> M
+    D --> M
+    M --> DD["Exact and near-duplicate removal"]
+    DD --> V["Schema and evidence validation"]
+    V --> CL["Question clustering for review"]
+    CL --> H["Human review of questions and references"]
+    H --> Q["Qwen qrels proposals via local Ollama"]
+    Q --> HR["Human verification of relevance labels"]
+    HR --> F["Frozen benchmark version"]
+    F --> R["Hybrid RAG evaluation"]
+    R --> L["LangSmith traces, datasets and scores"]
+```
+
+The three layers cover different kinds of questions:
+
+| Layer | What it contains | Why it exists |
+| :--- | :--- | :--- |
+| **A: General RAG** | Direct facts, paraphrases, lexical mismatch, multi-hop questions, comparisons, numerical questions, distractors, ambiguity, and partial evidence. | Checks the common retrieval and answer patterns found in a general document Q&A system. |
+| **B: PDF Q&A** | Table lookups, table comparisons, definitions, procedures, exceptions, section scope, cross-references, entity details, version/date scope, page citations, and enumerations. | Tests document structures and questions that are easy to mishandle when parsing PDFs. |
+| **C: Robustness cases** | Manually curated cases covering weak or missing evidence, citation mistakes, prompt injection, access boundaries, agent/tool failures, numerical interpretation, and abstention. | Adds realistic edge cases that should not be left to a question generator alone. These are curated test cases, not a claim that they were all observed in production traffic. |
+
+### 2. Candidate generation and curation
+
+The generation CLI and the orchestration scripts have separate jobs. Generators create candidate questions; the combine script performs the global curation pass across all three layers.
+
+| File | Purpose |
+| :--- | :--- |
+| `evaluation/scenarios/scenario_library.py` | Defines the scenario types and instructions used to generate questions. |
+| `evaluation/generators/question_generator.py` | Calls the question-generation model with corpus chunks and scenario instructions. |
+| `evaluation/scripts/generate_benchmark.py` | CLI entry point for generating a layer's candidates, then running that layer's initial cleanup and validation. |
+| `evaluation/scripts/combine_benchmark_layers.py` | Loads A, B, and C together and writes the combined candidate set plus duplicate, rejected, and cluster outputs. |
+| `evaluation/processing/deduplicator.py` | Removes exact and near-duplicate questions using normalized text and token similarity. |
+| `evaluation/processing/validator.py` | Checks required fields, expected behavior, reference answers, and whether source chunk IDs exist in the corpus snapshot. |
+| `evaluation/processing/clusterer.py` | Groups similar questions to make human review easier. Clusters organize review; they do not prove that questions are equivalent. |
+| `evaluation/schemas/benchmark.py` | Defines the benchmark record, validates qrels grades and status, and reads/writes JSONL. |
+| `evaluation/LAYERED_BENCHMARK_WORKFLOW.md` | Documents the layer generation and global curation commands. |
+
+The global merge follows this order:
+
+1. Load the three candidate JSONL files.
+2. Remove exact and near-duplicate questions.
+3. Validate record structure and source chunk IDs against the fixed corpus snapshot.
+4. Write accepted, duplicate, and rejected records separately.
+5. Cluster accepted questions to help reviewers find similar cases.
+6. Reset qrels to empty and pending because merging candidates must never silently create ground-truth relevance labels.
+
+For the current run, the merge reported 116 input records, 113 unique candidates after deduplication, 111 accepted for human review, 2 rejected, and 3 duplicates.
+
+### 3. Qrels proposals with Qwen and Ollama
+
+Qrels are graded relevance labels connecting a question to corpus chunks:
+
+- `2`: the chunk directly supports the answer.
+- `1`: the chunk provides useful partial evidence.
+- `0`: irrelevant. Grade 0 is implicit, so irrelevant chunks are omitted from the JSONL map.
+
+A source chunk ID is an evidence hint from question generation. It is not automatically treated as relevant.
+
+| File | Purpose |
+| :--- | :--- |
+| `evaluation/scripts/propose_qrels.py` | Loads benchmark records and the full corpus snapshot, selects records needing proposals, runs the proposer, and saves progress after each question. |
+| `evaluation/generators/qrels_proposer.py` | Builds the relevance prompt, parses the model's JSON, and accepts only supplied chunk IDs with grades 1 or 2. |
+| `evaluation/generators/local_eval_client.py` | Sends evaluation-only inference requests to the local Ollama instance. |
+| `evaluation/schemas/benchmark.py` | Enforces the allowed qrels grades and the `pending` or `verified` status. |
+
+The current local evaluator uses **Qwen 3 1.7B through Ollama**. The model is small enough to run locally without sending the benchmark corpus or evaluation prompts to an external model provider. Ollama keeps inference on the developer machine, while the dedicated `LOCAL_EVAL_*` settings keep evaluation credentials and model selection separate from the application's generation provider.
+
+Example local configuration:
+
+```env
+LOCAL_EVAL_BASE_URL=http://127.0.0.1:11434
+LOCAL_EVAL_MODEL=qwen3:1.7b
+LOCAL_EVAL_API_KEY=ollama
+```
+
+Run the proposer from the repository root:
+
+```powershell
+python -m evaluation.scripts.propose_qrels
+```
+
+The proposer saves its output after each completed question. Model-generated labels remain `pending`; a person must inspect the evidence and explicitly mark the qrels as `verified`. Abstention cases do not need relevant chunk labels because their expected behavior is to answer without claiming unsupported evidence.
+
+### 4. Human review without repetitive manual checking
+
+The goal is not to ask a person to re-read every easy example repeatedly. Automation handles formatting, duplicate detection, chunk-ID checks, and first-pass relevance suggestions. Human attention is directed to examples where a mistake would affect benchmark quality.
+
+#### Random sampling
+
+Review a small random sample from otherwise straightforward candidates. This is a quality-control check for errors that automated validation and the qrels proposer may consistently miss.
+
+#### Uncertainty sampling
+
+Prioritize records where the model is unsure, returns no relevant chunks, or produces weak or inconsistent relevance labels. These are more likely to need a careful evidence check.
+
+#### Disagreement cases
+
+Compare the proposed qrels with source chunk hints, other evaluators, or later retrieval results. Conflicts are sent to a reviewer instead of being silently resolved by the model.
+
+#### Active learning
+
+Use reviewed examples to identify underrepresented scenarios and difficult patterns. New questions can then target those gaps rather than generating more copies of cases the benchmark already covers.
+
+#### Expert adjudication
+
+Send ambiguous, high-impact, or disputed cases to an experienced reviewer for a final decision. This creates a clear ground-truth decision for cases where automated checks are not enough.
+
+These are review strategies for scaling the workflow. They should only be described as automated sampling features once their selection and routing logic is implemented in code.
+
+### 5. Benchmark freeze and versioning
+
+A benchmark is ready to freeze only after:
+
+- Questions and reference answers have been reviewed.
+- Every source chunk ID has been checked against the selected corpus snapshot.
+- Qrels have been reviewed and marked `verified`; intentional abstention cases remain without relevant chunk labels.
+- The corpus snapshot and benchmark version are recorded together.
+
+Keep the combined candidate file, qrels proposal file, and frozen benchmark separate. The candidate file is the curated question set; the qrels file contains proposed or verified evidence labels; the frozen file is the version used for repeatable evaluation.
+
+### 6. Retrieval and answer evaluation
+
+The repository already has a four-judge evaluation design in `eval.py` and mathematical retrieval metrics in `metrics.py`. The next benchmark-driven step is to connect the frozen dataset to the live RAG query function and run it through LangSmith.
+
+| Evaluation component | What it measures | Existing implementation |
+| :--- | :--- | :--- |
+| Precision@K | How many of the top-K retrieved chunks are relevant. | `metrics.py` |
+| Recall@K | How much of the known relevant evidence was retrieved. | `metrics.py` |
+| MRR | How early the first relevant chunk appears. | `metrics.py` |
+| NDCG@K | Whether highly relevant chunks are ranked above partially relevant ones. | `metrics.py` |
+| Retrieval relevance judge | Whether retrieved context is useful for the question. | `eval.py` |
+| Groundedness judge | Whether answer claims are supported by retrieved context. | `eval.py` |
+| Correctness judge | Whether the answer matches the reference answer. | `eval.py` |
+| Answer relevance judge | Whether the answer directly addresses the question. | `eval.py` |
+
+The current `eval.py` contains a small legacy hand-written benchmark. The layered JSONL benchmark is the new source of evaluation examples; the next integration step is to upload it as a LangSmith dataset and connect the four judges and retrieval metrics to each dataset run. This keeps benchmark creation separate from evaluation execution and makes runs repeatable.
+
+```mermaid
+flowchart LR
+    DS["Frozen JSONL benchmark"] --> LS["LangSmith dataset"]
+    LS --> APP["Hybrid RAG query function"]
+    APP --> OUT["Answer + retrieved chunks + latency"]
+    OUT --> IR["metrics.py: P@K, R@K, MRR, NDCG"]
+    OUT --> J["eval.py: four LLM judges"]
+    IR --> RES["Per-example and aggregate results"]
+    J --> RES
+    RES --> TRACE["LangSmith traces and experiment comparison"]
+```
+
+Start with low concurrency and a small batch to confirm the API limits and trace shape before running the full dataset. Keep evaluation credentials separate from the application's LLM credentials.
 
 ---
 
