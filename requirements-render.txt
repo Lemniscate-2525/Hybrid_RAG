@@ -1,0 +1,20 @@
+# Production Requirements for Render Backend (Lightweight CPU & Memory Optimized)
+# Excludes heavy CUDA/PyTorch packages, Streamlit frontend, pytest, and reportlab
+python-dotenv==1.1.1
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+pydantic==2.14.3
+pydantic-settings==2.13.1
+email-validator==2.3.0
+sqlalchemy==2.1.4
+psycopg[binary]==3.2.10
+bcrypt==5.0.0
+PyJWT==2.15.1
+python-multipart==0.0.33
+filetype==1.2.0
+pypdf==6.21.4
+fastembed==0.9.1
+qdrant-client==1.20.0
+redis==8.1.0
+httpx==0.28.1
+llama-index-core==0.14.25

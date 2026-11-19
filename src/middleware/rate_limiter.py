@@ -48,27 +48,37 @@ class RedisConnectionManager:
 
     def _init_connection(self):
         try:
-            r = redis.Redis.from_url(
+            pool = redis.ConnectionPool.from_url(
                 settings.REDIS_URL,
-                socket_timeout=settings.REDIS_TIMEOUT_MS / 1000.0,
-                socket_connect_timeout=settings.REDIS_TIMEOUT_MS / 1000.0,
+                max_connections=20,
+                socket_timeout=max(settings.REDIS_TIMEOUT_MS / 1000.0, 5.0),
+                socket_connect_timeout=max(settings.REDIS_TIMEOUT_MS / 1000.0, 5.0),
+                retry_on_timeout=True,
                 decode_responses=True
             )
+            r = redis.Redis(connection_pool=pool)
             r.ping()
             self.client = r
             self.is_connected = True
-            logger.info("Connected to distributed Redis server.")
+            logger.info(f"Connected to distributed Redis server at {settings.REDIS_URL}")
         except Exception as e:
-            logger.warning(f"Could not connect to Redis at {settings.REDIS_URL}: {e}. Falling back to FakeRedis for development/testing.")
-            try:
-                import fakeredis
-                self.client = fakeredis.FakeRedis(decode_responses=True)
-                self.is_connected = True
-                logger.info("Initialized in-memory FakeRedis fallback.")
-            except Exception as fe:
-                logger.error(f"Failed to initialize FakeRedis: {fe}")
+            if settings.ENVIRONMENT == "production":
+                logger.error(f"Production Redis connection failed at {settings.REDIS_URL}: {e}. FakeRedis fallback is disabled in production.")
                 self.client = None
                 self.is_connected = False
+                if settings.REDIS_RATE_LIMIT_ENABLED:
+                    raise RuntimeError(f"Production configuration error: Failed to connect to Redis at {settings.REDIS_URL}: {e}")
+            else:
+                logger.warning(f"Could not connect to Redis at {settings.REDIS_URL}: {e}. Falling back to FakeRedis for development/testing.")
+                try:
+                    import fakeredis
+                    self.client = fakeredis.FakeRedis(decode_responses=True)
+                    self.is_connected = True
+                    logger.info("Initialized in-memory FakeRedis fallback for non-production environment.")
+                except Exception as fe:
+                    logger.error(f"Failed to initialize FakeRedis: {fe}")
+                    self.client = None
+                    self.is_connected = False
 
     def get_client(self) -> Optional[redis.Redis]:
         return self.client

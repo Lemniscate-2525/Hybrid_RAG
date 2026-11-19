@@ -14,7 +14,19 @@ logger = logging.getLogger(__name__)
 
 class QdrantService:
     def __init__(self):
-        if settings.QDRANT_URL:
+        if settings.ENVIRONMENT == "production":
+            if not settings.QDRANT_URL or not settings.QDRANT_API_KEY:
+                raise RuntimeError(
+                    "Production configuration error: QDRANT_URL and QDRANT_API_KEY are strictly required in production mode. "
+                    "In-memory and local disk Qdrant fallback is disabled in production."
+                )
+            logger.info(f"Connecting to production Qdrant at {settings.QDRANT_URL}")
+            self.client = QdrantClient(
+                url=settings.QDRANT_URL,
+                api_key=settings.QDRANT_API_KEY,
+                timeout=30
+            )
+        elif settings.QDRANT_URL:
             logger.info(f"Connecting to Qdrant at {settings.QDRANT_URL}")
             self.client = QdrantClient(
                 url=settings.QDRANT_URL,
@@ -83,20 +95,23 @@ class QdrantService:
         file_name: str,
         chunks: List[Dict[str, Any]],
         dense_vectors: List[List[float]],
-        sparse_vectors: List[qmodels.SparseVector]
+        sparse_vectors: List[qmodels.SparseVector],
+        start_index: int = 0
     ) -> int:
         """
         Upsert document chunks into Qdrant with deterministic UUIDs and tenant metadata.
+        Supports start_index for bounded batch ingestion.
         """
         points = []
         for i, (chunk, dense_emb, sparse_vec) in enumerate(zip(chunks, dense_vectors, sparse_vectors)):
-            # Generate deterministic UUID based on user_id, doc_id, and chunk_index to prevent collisions
-            point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{user_id}:{doc_id}:{i}"))
+            global_index = start_index + i
+            # Generate deterministic UUID based on user_id, doc_id, and global chunk_index
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{user_id}:{doc_id}:{global_index}"))
             payload = {
                 "user_id": user_id,
                 "doc_id": doc_id,
                 "file_name": file_name,
-                "chunk_index": i,
+                "chunk_index": global_index,
                 "text": chunk.get("text", ""),
                 "page_label": chunk.get("page_label", "1"),
             }
@@ -110,8 +125,8 @@ class QdrantService:
             )
             points.append(point)
 
-        # Upsert in batches of 64
-        batch_size = 64
+        # Upsert in batches of 32
+        batch_size = getattr(settings, "INGESTION_BATCH_SIZE", 32)
         total_upserted = 0
         for b_start in range(0, len(points), batch_size):
             batch = points[b_start : b_start + batch_size]

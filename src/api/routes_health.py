@@ -33,9 +33,9 @@ def readiness_probe(response: Response, db: Session = Depends(get_db)):
     try:
         db.execute(text("SELECT 1"))
         components["database"] = ComponentStatus(status="UP", details="SQLAlchemy session responsive")
-    except Exception as e:
+    except Exception:
         is_ready = False
-        components["database"] = ComponentStatus(status="DOWN", details=str(e))
+        components["database"] = ComponentStatus(status="DOWN", details="Database query failed")
 
     # Check Redis
     redis_client = redis_manager.get_client()
@@ -43,9 +43,11 @@ def readiness_probe(response: Response, db: Session = Depends(get_db)):
         try:
             redis_client.ping()
             components["redis"] = ComponentStatus(status="UP", details="Redis responsive")
-        except Exception as e:
-            components["redis"] = ComponentStatus(status="DOWN", details=str(e))
+        except Exception:
+            is_ready = False
+            components["redis"] = ComponentStatus(status="DOWN", details="Redis ping failed")
     else:
+        is_ready = False
         components["redis"] = ComponentStatus(status="DOWN", details="Redis connection unavailable")
 
     # Check Qdrant
@@ -55,9 +57,9 @@ def readiness_probe(response: Response, db: Session = Depends(get_db)):
             status="UP",
             details=f"Collection '{qdrant_service.collection_name}' ready (exists={exists})"
         )
-    except Exception as e:
+    except Exception:
         is_ready = False
-        components["qdrant"] = ComponentStatus(status="DOWN", details=str(e))
+        components["qdrant"] = ComponentStatus(status="DOWN", details="Qdrant cluster check failed")
 
     overall_status = "UP" if is_ready else "DOWN"
     if not is_ready:

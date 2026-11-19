@@ -51,13 +51,15 @@ class Settings(BaseSettings):
     DENSE_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
     SPARSE_MODEL_NAME: str = "Qdrant/bm42-all-minilm-l6-v2-attentions"
     RERANKER_MODEL_NAME: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    ONNX_RERANKER_MODEL_NAME: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+    USE_ONNX_RERANKER: bool = True
 
     # Redis (Rate Limiting & Caching)
     REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_RATE_LIMIT_ENABLED: bool = True
     REDIS_CACHE_ENABLED: bool = True
     REDIS_CACHE_TTL_SECONDS: int = 3600  # 1 hour
-    REDIS_TIMEOUT_MS: int = 1000
+    REDIS_TIMEOUT_MS: int = 5000
 
     # Rate Limits (requests per window)
     RATE_LIMIT_AUTH_PER_MINUTE: int = 10
@@ -72,16 +74,36 @@ class Settings(BaseSettings):
     MAX_RETRIEVAL_LIMIT: int = 20
     DEFAULT_RETRIEVAL_LIMIT: int = 5
     TOP_K_RERANK: int = 2
+    INGESTION_BATCH_SIZE: int = 32
 
     # LLM Reliability
-    LLM_TIMEOUT_SECONDS: float = 30.0
+    LLM_TIMEOUT_SECONDS: float = 120.0
     LLM_MAX_RETRIES: int = 3
     CIRCUIT_BREAKER_FAILURE_THRESHOLD: int = 5
     CIRCUIT_BREAKER_RESET_TIMEOUT: float = 30.0
 
     # CORS & Trusted Proxies
-    CORS_ORIGINS: List[str] = ["http://localhost:8501", "http://127.0.0.1:8501", "http://localhost:8000"]
+    CORS_ORIGINS: List[str] = [
+        "http://localhost:8501",
+        "http://127.0.0.1:8501",
+        "http://localhost:8000",
+        "https://*.streamlit.app",
+        "*"
+    ]
     TRUSTED_PROXIES: List[str] = ["127.0.0.1", "::1"]
+
+    def validate_production(self) -> None:
+        """Validate production prerequisites to prevent deployment failures."""
+        if self.ENVIRONMENT == "production":
+            if not self.QDRANT_URL:
+                raise ValueError("CRITICAL: QDRANT_URL must be set in production mode.")
+            if not self.QDRANT_API_KEY:
+                raise ValueError("CRITICAL: QDRANT_API_KEY must be set in production mode.")
+            if "sqlite" in self.DATABASE_URL.lower():
+                raise ValueError("CRITICAL: DATABASE_URL must point to a durable PostgreSQL instance in production.")
+            if self.REDIS_RATE_LIMIT_ENABLED and "localhost" in self.REDIS_URL:
+                # Log warning if using localhost Redis in production
+                pass
 
     def ensure_directories(self) -> None:
         """Create necessary directories if they do not exist."""

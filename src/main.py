@@ -25,9 +25,10 @@ logger = logging.getLogger("api")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Initializing Application Lifecycle...")
+    settings.validate_production()
     # Initialize database tables
     init_db()
-    logger.info("Application startup complete.")
+    logger.info("Application startup complete (models deferred for on-demand lazy initialization).")
     yield
     logger.info("Application shutting down...")
 

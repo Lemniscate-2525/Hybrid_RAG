@@ -147,11 +147,6 @@ class IngestionService:
 
         # Extract and chunk
         chunks = self.extract_pdf_chunks(contents, sanitized_filename)
-        texts = [c["text"] for c in chunks]
-
-        # Generate embeddings
-        dense_vectors = embedding_service.embed_dense(texts)
-        sparse_vectors = embedding_service.embed_sparse(texts)
 
         # Save file to user-isolated directory
         user_upload_dir = settings.UPLOAD_DIR / user.id
@@ -176,15 +171,26 @@ class IngestionService:
         doc_record.stored_path = str(file_path)
         db.commit()
 
-        # Upsert into Qdrant
-        qdrant_service.upsert_chunks(
-            user_id=user.id,
-            doc_id=doc_record.id,
-            file_name=sanitized_filename,
-            chunks=chunks,
-            dense_vectors=dense_vectors,
-            sparse_vectors=sparse_vectors
-        )
+        # Bounded batch embedding and indexing to maintain flat memory usage (< 512MB)
+        batch_size = getattr(settings, "INGESTION_BATCH_SIZE", 32)
+        total_chunks = len(chunks)
+        for i in range(0, total_chunks, batch_size):
+            batch_chunks = chunks[i : i + batch_size]
+            batch_texts = [c["text"] for c in batch_chunks]
+            batch_dense = embedding_service.embed_dense(batch_texts)
+            batch_sparse = embedding_service.embed_sparse(batch_texts)
+
+            qdrant_service.upsert_chunks(
+                user_id=user.id,
+                doc_id=doc_record.id,
+                file_name=sanitized_filename,
+                chunks=batch_chunks,
+                dense_vectors=batch_dense,
+                sparse_vectors=batch_sparse,
+                start_index=i
+            )
+            # Free temporary batch arrays immediately
+            del batch_texts, batch_dense, batch_sparse, batch_chunks
 
         return doc_record
 

@@ -60,6 +60,16 @@ class ResilientLLMClient:
 
     def get_credentials(self) -> Dict[str, str]:
         """Dynamically resolve API key, endpoint, and model from environment."""
+        base_url = os.getenv("LLM_BASE_URL") or settings.LLM_BASE_URL
+        if base_url and ("127.0.0.1" in base_url or "localhost" in base_url):
+            return {
+                "configured": True,
+                "api_key": "ollama",
+                "api_url": base_url,
+                "model": os.getenv("LLM_MODEL") or "qwen3:1.7b",
+                "provider": "ollama"
+            }
+
         # Check OpenRouter, generic LLM key, or Mistral
         api_key = (
             os.getenv("OPENROUTER_API_KEY") or
@@ -164,9 +174,28 @@ class ResilientLLMClient:
                     data = response.json()
                     choices = data.get("choices", [])
                     if choices and "message" in choices[0]:
-                        content = choices[0]["message"]["content"]
-                        self.circuit_breaker.record_success()
-                        return content
+                        message = choices[0]["message"]
+                        content = message.get("content")
+
+                        if isinstance(content, list):
+                            text_parts = [
+                                part.get("text", "")
+                                for part in content
+                                if isinstance(part, dict) and part.get("type") in ("text", None)
+                            ]
+                            content = "\n".join(part for part in text_parts if part).strip()
+
+                        if not (isinstance(content, str) and content.strip()):
+                            reasoning = message.get("reasoning") or message.get("reasoning_content")
+                            if isinstance(reasoning, str) and reasoning.strip():
+                                content = reasoning.strip()
+
+                        if isinstance(content, str) and content.strip():
+                            self.circuit_breaker.record_success()
+                            return content
+
+                        logger.warning("LLM provider returned empty text content. Falling back to local synthesis.")
+                        return self._fallback_local_synthesis(user_prompt)
                     else:
                         raise RuntimeError(f"Unexpected response structure: {data}")
 
@@ -201,6 +230,7 @@ class ResilientLLMClient:
 
         # Retries exhausted
         self.circuit_breaker.record_failure()
-        raise RuntimeError(f"Failed to communicate with LLM provider after {self.max_retries} attempts: {str(last_exception)}")
+        logger.warning(f"Failed to communicate with LLM provider after {self.max_retries} attempts: {str(last_exception)}. Falling back to local passage synthesis.")
+        return self._fallback_local_synthesis(user_prompt)
 
 llm_client = ResilientLLMClient()
